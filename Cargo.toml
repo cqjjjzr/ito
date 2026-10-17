@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/*"]
-default-members = ["crates/server"]
+# The platform agents share a binary name; build Windows separately with its target and package.
+default-members = ["crates/server", "crates/agent-linux"]
 resolver = "3"
 
 [workspace.package]

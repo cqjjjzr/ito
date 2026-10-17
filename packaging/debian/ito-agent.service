@@ -1,0 +1,29 @@
+[Unit]
+Description=Ito agent: keeps this host's Ito connections in step
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/ito-agent run
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+StateDirectory=ito-agent
+StateDirectoryMode=0700
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

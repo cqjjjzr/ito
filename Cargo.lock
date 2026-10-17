@@ -2007,6 +2007,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "ipnet",
+ "ito-agent-core",
+ "ito-shared",
+ "libc",
+ "mockall",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "xshell",
+]
+
+[[package]]
 name = "ito-agent-core"
 version = "0.1.0"
 dependencies = [
