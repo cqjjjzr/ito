@@ -10,6 +10,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: apt-get update && apt-get install -y --no-install-recommends dpkg-dev
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: web/package.json
@@ -17,6 +18,8 @@ jobs:
         with:
           node-version: '26'
           check-latest: true
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
       - uses: extractions/setup-just@v4
       - run: just build-web
       - run: just check test-rust test-web
@@ -31,11 +34,21 @@ jobs:
           compression-level: 0
   windows:
     runs-on: windows-2025
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/build/windows/nuget
     steps:
       - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: packaging/windows/global.json
+          cache: true
+          cache-dependency-path: packaging/windows/**/packages.lock.json
+      - uses: actions/cache@v4
+        with:
+          path: build/windows/tools
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-about-${{ hashFiles('rust-toolchain.toml', 'packaging/windows/build.ps1') }}
       - run: pwsh -NoProfile -File packaging/windows/build.ps1
       - uses: actions/upload-artifact@v4
         with:

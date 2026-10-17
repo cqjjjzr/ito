@@ -9,6 +9,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: web/package.json
@@ -16,6 +19,8 @@ jobs:
         with:
           node-version: '26'
           check-latest: true
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
       - uses: extractions/setup-just@v4
       - run: just build-web
       - run: just check test-rust test-web
@@ -23,4 +28,8 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - run: pwsh -NoProfile -File packaging/windows/build.ps1 -TestOnly
