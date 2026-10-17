@@ -1,0 +1,2974 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ito",
+    "description": "HTTP API of the Ito controller.\n\nAll request and response bodies use JSON. Request bodies are limited to 64 KiB, and unknown fields are ignored.\n\n## Authentication\n\n### Browser sessions\n\nBrowsers initiate sign-in via `GET /api/v1/auth/login`, which redirects to the configured OpenID Connect provider. After authentication, the provider redirects back to `GET /api/v1/auth/callback`. The callback sets the session cookie (`__Host-ito_session`, or `ito_session` when `cookie_secure` is `false`) and redirects to `/`.\n\nThe callback also sets the session's CSRF token in the readable cookie `__Host-ito_csrf` (`ito_csrf` when `cookie_secure` is `false`). The same token is returned by `GET /api/v1/session`. Every state-changing request (any method other than `GET` and `HEAD`) must include:\n\n- `X-CSRF-Token`: the session's CSRF token\n- `Origin`: the controller's configured `public_url`\n\nAn HTTP `401` response indicates that the session has expired or exceeded `session_idle`. Operations marked with the `admin` role require a session whose OIDC ID token included at least one group listed in `oidc.admin_groups` at sign-in.\n\n### Device agents\n\nDevice agents authenticate with `Authorization: Bearer itoa_<secret>` using the bearer token returned when the device was claimed. The controller returns `401` if the agent credential has been revoked or replaced, if the device is blocked or deleting, or if the owning account is inactive.\n\n## Concurrency control and revisions\n\nStateful resources include a numeric `revision` field and return it in the `ETag` header (for example, `\"4\"`). Update requests must send that ETag back in the `If-Match` header:\n\n- Missing `If-Match` returns `428 Precondition Required`.\n- Stale `If-Match` returns `412 Precondition Failed`.\n\nAdministrative and revocation endpoints (`POST /devices/{id}/block`, `POST /devices/{id}/unblock`, `POST /devices/{id}/revoke`, and `DELETE /devices/{id}`) accept `If-Match` optionally so concurrent updates from an agent cannot delay revocation or deletion.\n\nWhen a device update commits, the background reconciler applies the desired state to the Linux kernel:\n\n- `applied_revision` matches `revision` once the reconciler has applied and verified that revision in the kernel.\n- `apply_error` contains the failure reason if the latest reconciliation pass failed.\n- `disabled_reason` indicates why a device's peer is currently excluded from the kernel (such as `paused`, `outside_pools`, or `key_expired`), or `null` when the peer is enabled.\n\n## Error responses\n\nErrors use RFC 9457 Problem Details (`application/problem+json`):\n\n```json\n{\n  \"type\": \"/api/v1/problems/pool_exhausted\",\n  \"title\": \"No free block of the requested size.\",\n  \"status\": 409,\n  \"code\": \"pool_exhausted\",\n  \"instance\": \"urn:uuid:…\",\n  \"detail\": \"…\"\n}\n```\n\nClients should branch on `code`. The `Problem` schema lists all error codes with their HTTP status and title. `detail`, when present, describes the specific validation or conflict failure for the request, and `instance` contains the request UUID (also returned in the `x-request-id` header and recorded in the server logs). Internal server errors omit `detail` and record the cause in the server logs only.\n\nWhen a browser navigation request sends `Accept: text/html` first, the server renders the web application's error page with the same HTTP status code instead of returning raw JSON.\n\n## Device keys and agent login\n\nA device record persists until deleted, while its WireGuard public key expires `key_lifetime` after it was last set. Within 60 seconds after a key expires, the reconciler removes the peer from the kernel until a key is set or renewed. Keys can be managed either from the browser or through `ito-agent`.\n\n### Browser-managed keys\n\nThe browser generates a WireGuard key pair locally, registers the public key with `POST /api/v1/devices/{id}/key` (or sends `{}` to renew the current key), and fetches `GET /api/v1/devices/{id}/config` to assemble a downloadable `wg-quick` configuration file with the local private key.\n\n### Agent login and key rotation\n\nAn agent obtains its credential through an interactive browser approval flow:\n\n1. The agent generates a WireGuard key pair and a 32-byte random secret encoded as unpadded base64url. It computes the request ID as the lowercase hex SHA-256 digest of the secret and opens `PUBLIC_URL/connect?id=<id>&t=<unix_seconds>` in the user's browser.\n2. Within 15 minutes of `t`, the signed-in user approves the request for a specific device via `POST /api/v1/devices/{id}/claims`.\n3. The agent polls `POST /api/v1/agent/claim` with its secret and WireGuard public key. The server returns `202 Accepted` until the request is approved, and then returns `200 OK` with the device view and a new bearer token (`itoa_<secret>`), binding the agent's public key to the device.\n4. The agent polls `GET /api/v1/agent/config` until `\"ready\": true` and configures the local WireGuard interface.\n5. Within 3 days of `key_expires_at`, the agent renews or rotates its WireGuard key via `POST /api/v1/agent/key`.\n\nPending claim approvals are held in memory for 10 minutes, up to 5 concurrent approvals per account. Repeating `POST /api/v1/agent/claim` within 2 minutes of the initial claim issues a replacement credential so an agent can recover from a dropped response.\n\nEach device has at most one active agent credential; claiming a device replaces any previous credential. A key held by any other device is refused with `key_conflict`, even within the same account. To reuse it, first revoke or delete that device, or give it a different key.\n",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The controller's `public_url`."
+    }
+  ],
+  "paths": {
+    "/api/v1/auth/login": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Start a sign-in",
+        "description": "Redirects the browser to the OpenID Connect provider. The OAuth state, PKCE verifier, and nonce\nare stored in a 10-minute `HttpOnly` cookie so unfinished sign-ins do not allocate server state.",
+        "operationId": "login",
+        "responses": {
+          "303": {
+            "description": "Redirect to the identity provider."
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/callback": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Finish a sign-in",
+        "description": "Handles the OpenID Connect callback, sets the session and CSRF cookies, and redirects to `/`.",
+        "operationId": "finish_login",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "description": "Authorization code returned by the identity provider on success.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "path",
+            "description": "Error code returned by the identity provider when sign-in fails or is cancelled.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Signed in; redirect to `/`."
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "End the browser session",
+        "description": "Clears the local session and returns a provider logout URL for browser navigation.\nLocal logout succeeds even if provider discovery fails or logout is unsupported.",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Get the browser session",
+        "operationId": "get_session",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "List accounts",
+        "operationId": "list_accounts",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountView"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{id}": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Get an account",
+        "description": "Members can read their own account; administrators can read any account.",
+        "operationId": "get_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{id}/policy": {
+      "put": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Set an account's policy",
+        "operationId": "set_account_policy",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Policy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/refresh": {
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Check every account's user status now",
+        "description": "Triggers an immediate background SCIM status sweep across all accounts and returns `202\nAccepted` without waiting for completion. Requires the `[scim]` configuration section.",
+        "operationId": "refresh_accounts",
+        "responses": {
+          "202": {
+            "description": "The sweep is starting."
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "List audit entries",
+        "description": "Returns audit log entries ordered from newest to oldest.",
+        "operationId": "list_audit",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Maximum number of entries to return, up to `1000` (default `100`).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "description": "Return only entries older than this audit log ID.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEntry"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/interfaces": {
+      "get": {
+        "tags": [
+          "interfaces"
+        ],
+        "summary": "List interfaces",
+        "operationId": "list_interfaces",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Interface"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/interfaces/{id}": {
+      "get": {
+        "tags": [
+          "interfaces"
+        ],
+        "summary": "Get an interface",
+        "operationId": "get_interface",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interface"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/diagnostics": {
+      "get": {
+        "tags": [
+          "interfaces"
+        ],
+        "summary": "List the kernel state of every interface",
+        "operationId": "list_diagnostics",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Diagnostic"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "List devices",
+        "description": "Members see their own devices; administrators see all devices.",
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Create a device",
+        "description": "When both `addresses` and `allocate_addresses` are empty, the server automatically allocates one\nfree host address in each IP family that has available pool space and quota.",
+        "operationId": "create_device",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDevice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Get a device",
+        "operationId": "get_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Delete a device",
+        "description": "Revokes the device and marks it `deleting`. The reconciler removes the peer from the kernel and\nthen deletes the database record. `If-Match` is optional so concurrent edits cannot block\ndeletion.",
+        "operationId": "delete_device",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The resource's `ETag`, such as `\"4\"`; checked when sent.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Change a device's settings",
+        "operationId": "patch_device",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Settings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/psk": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Set a device's preshared key",
+        "operationId": "set_device_psk",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Psk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/addresses": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Set a device's addresses",
+        "operationId": "set_device_addresses",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Addresses"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/allowed-ips": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Set a device's extra server-side routes",
+        "description": "Adds prefixes to the peer's `AllowedIPs` on the server interface without changing the device's\npool grants. A prefix that another device on the same interface already routes, or one inside a\npool that overlaps another device's grants, is rejected. Extra routes of different devices may\nnest; WireGuard sends the overlap to the longer prefix.",
+        "operationId": "set_device_allowed_ips",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedIps"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/block": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Block a device",
+        "description": "Removes the device's peer from the kernel, blocks agent authentication, cancels pending claim\napprovals, and prevents non-administrators from modifying its keys, addresses, or deletion\nstate. `If-Match` is optional.",
+        "operationId": "block_device",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The resource's `ETag`, such as `\"4\"`; checked when sent.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/unblock": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Unblock a device",
+        "operationId": "unblock_device",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The resource's `ETag`, such as `\"4\"`; checked when sent.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": [
+              "admin"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/revoke": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Revoke a device",
+        "description": "Clears the device's WireGuard public key, deletes its agent credential, and cancels any pending\nclaim approvals, while keeping the device record and its assigned addresses. `If-Match` is\noptional.",
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The resource's `ETag`, such as `\"4\"`; checked when sent.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/claims": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Approve an agent for a device",
+        "description": "Authorizes the agent holding the secret whose SHA-256 digest is `id` to claim this device via\n`POST /agent/claim` within 10 minutes. Approvals are stored in memory only, up to 5 pending\napprovals per account.",
+        "operationId": "approve_claim",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimApproval"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/key": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Set or renew a device's key",
+        "description": "Sets or renews the device's WireGuard public key for `key_lifetime`.",
+        "operationId": "set_device_key",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceKey"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/config": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Get a device's client configuration",
+        "description": "Wait for `ready` to be `true` before bringing up the client tunnel. Pass the returned `ETag` in\n`If-None-Match` to receive `304 Not Modified` when the configuration has not changed.",
+        "operationId": "get_device_config",
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "An earlier `ETag` of this response.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceConfig"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{id}/status": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Get a device's kernel status",
+        "operationId": "get_device_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/device": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get its device",
+        "operationId": "get_agent_device",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/key": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Set or renew its device's key",
+        "description": "Sets or renews the device's WireGuard public key for `key_lifetime`.",
+        "operationId": "set_agent_key",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceKey"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/psk": {
+      "put": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Set its device's preshared key",
+        "operationId": "set_agent_psk",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted revision ETag of the resource, such as `\"4\"`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Psk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/config": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get its device's client configuration",
+        "description": "Wait for `ready` to be `true` before bringing up the client tunnel. Pass the returned `ETag` in\n`If-None-Match` to receive `304 Not Modified` when the configuration has not changed.",
+        "operationId": "get_agent_config",
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "An earlier `ETag` of this response.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceConfig"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/status": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get its device's kernel status",
+        "operationId": "get_agent_status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/revoke": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Revoke its device",
+        "description": "Clears the device's WireGuard public key and deletes its agent credential, while keeping the\ndevice record and its assigned addresses.",
+        "operationId": "revoke_agent",
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "agent": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/claim": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Claim an approved device",
+        "description": "Returns `202 Accepted` while waiting for a user to approve the claim request. Once approved,\nbinds `public_key` to the device, replaces its agent credential, and returns `200 OK` with the\nnew bearer token. Repeating the call within 2 minutes of the first claim issues a fresh token\nso the agent can recover from a lost response.",
+        "operationId": "claim_device",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Claim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Claimed"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Not approved yet."
+          },
+          "default": {
+            "description": "RFC 9457 Problem Details error response; see the `Problem` schema for error codes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Account": {
+        "type": "object",
+        "description": "User account created on first OpenID Connect sign-in.",
+        "required": [
+          "id",
+          "subject",
+          "display_name",
+          "blocked",
+          "idp_status",
+          "idp_check_error",
+          "quota_ipv4",
+          "quota_ipv6",
+          "revision",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "OpenID Connect `sub` claim identifying the user at the provider."
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "idp_status": {
+            "$ref": "#/components/schemas/IdpStatus"
+          },
+          "idp_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the account's IdP status was last applied, at sign-in or by the SCIM sweep."
+          },
+          "idp_check_error": {
+            "type": "boolean",
+            "description": "Whether the most recent SCIM user status check failed."
+          },
+          "quota_ipv4": {
+            "type": "string",
+            "description": "Per-account IPv4 quota override, or empty to use `quota.ipv4`."
+          },
+          "quota_ipv6": {
+            "type": "string",
+            "description": "Per-account IPv6 quota override, or empty to use `quota.ipv6`."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AccountView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Account"
+          },
+          {
+            "type": "object",
+            "required": [
+              "limits",
+              "usage"
+            ],
+            "properties": {
+              "limits": {
+                "$ref": "#/components/schemas/Quota"
+              },
+              "usage": {
+                "$ref": "#/components/schemas/Quota",
+                "description": "Number of addresses currently in use per IP family, formatted as decimal strings."
+              }
+            }
+          }
+        ],
+        "description": "Account record combined with its effective quota limits and current address usage."
+      },
+      "Addresses": {
+        "type": "object",
+        "description": "A device's interface addresses and routed prefix grants.\n\nEvery grant and interface address must belong to a pool on the device's interface, satisfy the\npool's `min_prefix_length`, `max_prefixes`, and `exclusions`, and avoid overlapping any server\ninterface address or another device's grants. The account's total usage across all devices must\nstay within its quota, though shrinking an existing allocation is always allowed.",
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Single IP addresses assigned to the client's WireGuard interface, such as `10.0.0.2`. Each\naddress also becomes a `/32` or `/128` grant unless it is already covered by `grants`. When\nboth `addresses` and `allocate_addresses` are empty, the server allocates one free address\nper address family that has available pool space and quota.",
+            "default": []
+          },
+          "allocate_addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pool prefixes from which to allocate one additional free client address each.",
+            "default": []
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional prefixes routed to the device, such as `10.0.0.8/29`.",
+            "default": []
+          },
+          "allocate_grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Allocation"
+            },
+            "description": "Prefix blocks to allocate from pools as additional grants.",
+            "default": []
+          }
+        }
+      },
+      "Allocation": {
+        "type": "object",
+        "description": "Request to allocate one free block of `prefix_length` from a pool.",
+        "required": [
+          "pool",
+          "prefix_length"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string",
+            "description": "Pool prefix, such as `10.0.0.0/24`."
+          },
+          "prefix_length": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AllowedIps": {
+        "type": "object",
+        "description": "Extra server-side routes for a device.",
+        "required": [
+          "allowed_ips"
+        ],
+        "properties": {
+          "allowed_ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AuditEntry": {
+        "type": "object",
+        "description": "Audit log entry recording a state change.",
+        "required": [
+          "id",
+          "actor",
+          "action",
+          "resource_id",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Principal that performed the action (`account:ID`, `device:ID`, or `identity`)."
+          },
+          "action": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Claim": {
+        "type": "object",
+        "description": "Request body for claiming a device after interactive approval.",
+        "required": [
+          "secret",
+          "public_key"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Agent secret (32 random bytes encoded as unpadded base64url) whose SHA-256 hex digest\nmatches the approved request ID."
+          },
+          "public_key": {
+            "type": "string",
+            "description": "Agent's WireGuard public key in standard base64."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Expected device ID when the agent requested a specific device (`ito-agent login --device`).\nIf the request was approved for a different device, the claim fails with\n`claim_device_mismatch` without modifying the approved device."
+          }
+        }
+      },
+      "ClaimApproval": {
+        "type": "object",
+        "description": "Request body for approving an agent claim on a device.",
+        "required": [
+          "id",
+          "t"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Lowercase 64-character hex SHA-256 digest of the agent's claim secret."
+          },
+          "t": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in seconds when the agent generated the login request (must be within the\nlast 15 minutes)."
+          }
+        }
+      },
+      "Claimed": {
+        "type": "object",
+        "description": "Claimed device and newly issued agent bearer token.",
+        "required": [
+          "token",
+          "device"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Bearer token (`itoa_<secret>`) for authenticating subsequent agent requests."
+          },
+          "device": {
+            "$ref": "#/components/schemas/Device"
+          }
+        }
+      },
+      "Code": {
+        "type": "string",
+        "description": "Machine-readable error code returned in API error responses.",
+        "enum": [
+          "invalid_request",
+          "invalid_credentials",
+          "invalid_login",
+          "forbidden",
+          "outside_pool",
+          "identity_mapping_invalid",
+          "not_found",
+          "method_not_allowed",
+          "request_timeout",
+          "conflict",
+          "address_conflict",
+          "address_quota_exceeded",
+          "pool_exhausted",
+          "key_conflict",
+          "dns_name_taken",
+          "self_block_forbidden",
+          "claim_limit_reached",
+          "claim_taken",
+          "claim_device_mismatch",
+          "revision_conflict",
+          "request_too_large",
+          "unsupported_media_type",
+          "precondition_required",
+          "internal_error",
+          "identity_unavailable",
+          "secret_unavailable",
+          "kernel_unavailable",
+          "kernel_command_failed",
+          "interface_ownership_mismatch",
+          "interface_name_in_use",
+          "database_unavailable"
+        ]
+      },
+      "Device": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeviceRecord"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "disabled_reason": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DisabledReason",
+                    "description": "Reason the device's peer is excluded from the kernel, or `null` when enabled."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Device record combined with the reason it is currently disabled, if any."
+      },
+      "DeviceConfig": {
+        "type": "object",
+        "description": "Parameters required by a client or agent to assemble its local WireGuard configuration.",
+        "required": [
+          "device_id",
+          "revision",
+          "enabled",
+          "ready",
+          "addresses",
+          "grants",
+          "preshared_key",
+          "server_public_key",
+          "endpoint",
+          "route_profiles",
+          "default_profile_id",
+          "dns",
+          "dns_search",
+          "mtu",
+          "keepalive"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the device is currently permitted to connect."
+          },
+          "disabled_reason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DisabledReason",
+                "description": "Reason the device cannot connect right now, or `null` when enabled."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "Whether the kernel reconciler has applied the device's current revision and interface\nsettings without error."
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Single IP addresses assigned to the client's WireGuard interface."
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Prefixes routed to this device on the server."
+          },
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preshared_key": {
+            "type": "string",
+            "description": "Preshared key in base64, or empty when none is configured."
+          },
+          "server_public_key": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "route_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteProfile"
+            },
+            "description": "Route profiles available on the interface. When the interface defines no profiles, the\nserver synthesizes a single `pools` profile covering the interface's address pools."
+          },
+          "default_profile_id": {
+            "type": "string"
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dns_search": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "DNS search domains, consisting of the interface's `dns_search` list followed by its\n`dns_zone`."
+          },
+          "mtu": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Suggested client MTU, or `0` for automatic selection."
+          },
+          "keepalive": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "key_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timestamp when the current WireGuard key expires unless renewed or rotated."
+          },
+          "agent_credential_issued_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timestamp when the device's current agent credential was issued, or `null` if none exists."
+          }
+        }
+      },
+      "DeviceKey": {
+        "type": "object",
+        "description": "WireGuard public key update request.",
+        "properties": {
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New public key, or omitted to renew the existing key.",
+            "default": null
+          }
+        }
+      },
+      "DeviceRecord": {
+        "type": "object",
+        "description": "WireGuard peer belonging to an account on a single interface.",
+        "required": [
+          "id",
+          "account_id",
+          "interface_id",
+          "name",
+          "note",
+          "grants",
+          "client_addresses",
+          "extra_allowed_ips",
+          "paused",
+          "blocked",
+          "deleting",
+          "revision",
+          "applied_revision",
+          "applied_enabled",
+          "apply_error",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "interface_id": {
+            "type": "string",
+            "description": "Configured interface name in `config.toml`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "dns_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional label for the device in the interface's DNS zone."
+          },
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Expiration timestamp for `public_key`."
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDR prefixes allocated to this device from the interface's pools."
+          },
+          "client_addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IP addresses assigned to the client's WireGuard interface."
+          },
+          "extra_allowed_ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional server-side AllowedIPs prefixes configured by an administrator."
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "blocked": {
+            "type": "boolean",
+            "description": "Whether an administrator blocked the device. Blocked devices keep their key and address\ngrants, but their peer is removed from the kernel, their agent credential cannot\nauthenticate, and non-admin owners cannot modify or delete them."
+          },
+          "deleting": {
+            "type": "boolean",
+            "description": "Whether the device is marked for deletion and waiting for the reconciler to remove its\npeer from the kernel."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "applied_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Latest device revision that the reconciler applied to and verified in the kernel."
+          },
+          "applied_enabled": {
+            "type": "boolean",
+            "description": "Whether the peer is currently installed on the kernel interface."
+          },
+          "apply_error": {
+            "type": "string",
+            "description": "Error from the latest reconciliation pass, or empty when applied. Set to\n`interface NAME failed to apply` when interface-level setup failed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "DeviceStatus": {
+        "type": "object",
+        "description": "Live kernel state of a device's WireGuard peer at request time.",
+        "required": [
+          "device_id",
+          "interface_id",
+          "observed_at",
+          "interface_present",
+          "interface_up",
+          "peer_present",
+          "addresses",
+          "receive_bytes",
+          "transmit_bytes"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "interface_id": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "interface_present": {
+            "type": "boolean"
+          },
+          "interface_up": {
+            "type": "boolean"
+          },
+          "peer_present": {
+            "type": "boolean"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_ips": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handshake": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "receive_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "transmit_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Diagnostic": {
+        "type": "object",
+        "description": "Live kernel state and reconciliation error for a single WireGuard interface.",
+        "required": [
+          "interface_id",
+          "apply_error"
+        ],
+        "properties": {
+          "interface_id": {
+            "type": "string"
+          },
+          "apply_error": {
+            "type": "string"
+          },
+          "observed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Link",
+                "description": "Observed kernel link and peers, or `null` if the interface is absent or could not be read."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observation_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DisabledReason": {
+        "type": "string",
+        "description": "Reason a device's peer is excluded from the kernel WireGuard interface, ordered by precedence.",
+        "enum": [
+          "interface_not_configured",
+          "interface_disabled",
+          "deleting",
+          "blocked",
+          "account_inactive",
+          "paused",
+          "outside_pools",
+          "address_conflict",
+          "no_key",
+          "key_expired",
+          "unknown"
+        ]
+      },
+      "IdpStatus": {
+        "type": "string",
+        "description": "Account status at the identity provider, updated on sign-in or via SCIM polling.",
+        "enum": [
+          "active",
+          "disabled",
+          "missing"
+        ]
+      },
+      "Interface": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/InterfaceSettings"
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "public_key",
+              "applied",
+              "apply_error"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Linux interface name and API identifier."
+              },
+              "public_key": {
+                "type": "string"
+              },
+              "applied": {
+                "type": "boolean",
+                "description": "Whether the configured state has been applied to and verified in the kernel."
+              },
+              "apply_error": {
+                "type": "string",
+                "description": "Error from the latest reconciliation pass, or empty when applied or when viewed by a\nnon-administrator."
+              }
+            }
+          }
+        ],
+        "description": "Configured WireGuard interface combined with its server public key and reconciliation status."
+      },
+      "InterfaceSettings": {
+        "type": "object",
+        "description": "WireGuard interface configuration, address pools, and client configuration hints.",
+        "properties": {
+          "listen_port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "UDP port the server interface listens on.",
+            "default": 0
+          },
+          "endpoint": {
+            "type": "string",
+            "description": "External `host:port` endpoint that clients connect to.",
+            "default": ""
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDR addresses assigned to the server interface, such as `10.0.0.1/24`.",
+            "default": []
+          },
+          "mtu": {
+            "type": "integer",
+            "format": "int32",
+            "description": "MTU of the server interface.",
+            "default": 1420
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "When `true`, the reconciler brings the interface down and removes all peers.",
+            "default": false
+          },
+          "client_mtu": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Suggested MTU for client configs, or `0` to let the client choose automatically.",
+            "default": 0
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "DNS server IP addresses included in client configs.",
+            "default": []
+          },
+          "dns_search": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "DNS search domains included in client configs.",
+            "default": []
+          },
+          "dns_zone": {
+            "type": "string",
+            "description": "Authoritative DNS zone served by `[dns]` for devices on this interface, or empty to disable.\nMultiple interfaces can share a zone. Also appended to the client's DNS search domains after\n`dns_search`.",
+            "default": ""
+          },
+          "keepalive": {
+            "type": "integer",
+            "format": "int32",
+            "description": "PersistentKeepalive interval in seconds for client configs, or `0` to disable.",
+            "default": 0
+          },
+          "default_profile_id": {
+            "type": "string",
+            "description": "ID of the default route profile for clients, or empty when `route_profiles` is empty.",
+            "default": ""
+          },
+          "route_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteProfile"
+            },
+            "description": "Named sets of client-side `AllowedIPs` that users can choose between.",
+            "default": []
+          },
+          "pools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Pool"
+            },
+            "description": "Address pools from which device addresses and prefix grants are allocated.",
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "Link": {
+        "type": "object",
+        "description": "Observed state of a kernel WireGuard interface.",
+        "required": [
+          "up",
+          "mtu",
+          "listen_port",
+          "public_key",
+          "addresses",
+          "peers"
+        ],
+        "properties": {
+          "up": {
+            "type": "boolean"
+          },
+          "mtu": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "listen_port": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "public_key": {
+            "type": "string"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Peer"
+            }
+          }
+        }
+      },
+      "LogoutView": {
+        "type": "object",
+        "description": "Navigation after ending the local browser session.",
+        "required": [
+          "redirect_url"
+        ],
+        "properties": {
+          "redirect_url": {
+            "type": "string",
+            "description": "Provider logout confirmation URL, or `/` if unsupported or unavailable."
+          }
+        }
+      },
+      "NewDevice": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Addresses"
+          },
+          {
+            "type": "object",
+            "required": [
+              "interface_id",
+              "name"
+            ],
+            "properties": {
+              "account_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Owning account ID. Only administrators may specify another account; defaults to the\nsigned-in user's account."
+              },
+              "interface_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "dns_name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Optional single-label DNS name to publish in the interface's `dns_zone`."
+              }
+            }
+          }
+        ],
+        "description": "Parameters for creating a new device."
+      },
+      "Peer": {
+        "type": "object",
+        "description": "Observed state of a WireGuard peer in the kernel.",
+        "required": [
+          "public_key",
+          "endpoint",
+          "allowed_ips",
+          "receive_bytes",
+          "transmit_bytes"
+        ],
+        "properties": {
+          "public_key": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "allowed_ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Peer AllowedIPs sorted lexicographically."
+          },
+          "handshake": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timestamp of the latest completed WireGuard handshake, if any."
+          },
+          "receive_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "transmit_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Policy": {
+        "type": "object",
+        "description": "Administrative policy settings for an account.",
+        "required": [
+          "blocked",
+          "quota"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "boolean",
+            "description": "Whether the account is blocked. Blocking an account immediately terminates its browser\nsessions and revokes its devices."
+          },
+          "quota": {
+            "$ref": "#/components/schemas/Quota",
+            "description": "Per-account address limits. Empty strings inherit the installation defaults from `[quota]`."
+          }
+        }
+      },
+      "Pool": {
+        "type": "object",
+        "description": "Address pool from which device addresses and routed prefixes are allocated.",
+        "required": [
+          "prefix"
+        ],
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "description": "CIDR prefix of the pool, such as `10.0.0.0/24`. Pools must not overlap within or across\ninterfaces."
+          },
+          "min_prefix_length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Minimum prefix length (largest block size) a single grant from this pool may have. When\nunset, only single-host grants (`/32` or `/128`) are allowed.",
+            "minimum": 0
+          },
+          "max_prefixes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum number of grants a single device may hold from this pool.",
+            "minimum": 0
+          },
+          "exclusions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sub-prefixes inside the pool that are reserved and never allocated to devices."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error response, as RFC 9457 problem details (`application/problem+json`).\n\n`code` is one of the codes in the table below; `type` is a page documenting it.\n\n| Code | Status | Title |\n|---|---|---|\n| `invalid_request` | 400 | Malformed or out-of-range input. |\n| `invalid_credentials` | 401 | Missing, expired or revoked session or agent credential. |\n| `invalid_login` | 401 | The sign-in did not complete. |\n| `forbidden` | 403 | Not allowed, or a missing or wrong CSRF token or Origin. |\n| `outside_pool` | 403 | A grant lies outside every pool of the interface. |\n| `identity_mapping_invalid` | 403 | The user status fetch does not know the signed-in subject. |\n| `not_found` | 404 | No such resource, or not yours. |\n| `method_not_allowed` | 405 | The resource does not support this method. |\n| `request_timeout` | 408 | The request took too long. |\n| `conflict` | 409 | A unique value is already taken. |\n| `address_conflict` | 409 | An address or route is already assigned elsewhere. |\n| `address_quota_exceeded` | 409 | The account's address quota would be exceeded. |\n| `pool_exhausted` | 409 | No free block of the requested size. |\n| `key_conflict` | 409 | The key belongs to a server or another device, or this device is blocked. |\n| `dns_name_taken` | 409 | Another device publishes that name. |\n| `self_block_forbidden` | 409 | Administrators cannot block themselves. |\n| `claim_limit_reached` | 409 | The account has the most agent approvals pending; wait for them to be claimed or expire. |\n| `claim_taken` | 409 | Another account approved this agent request. |\n| `claim_device_mismatch` | 409 | The request was approved for a device other than the one the agent asks for. |\n| `revision_conflict` | 412 | If-Match is stale. |\n| `request_too_large` | 413 | The body is over 64 KiB. |\n| `unsupported_media_type` | 415 | The body is not application/json. |\n| `precondition_required` | 428 | If-Match is missing. |\n| `internal_error` | 500 | A bug; the log has the cause. |\n| `identity_unavailable` | 503 | The identity provider did not answer as expected. |\n| `secret_unavailable` | 503 | A configured secret file cannot be read. |\n| `kernel_unavailable` | 503 | An ip or wg command could not run. |\n| `kernel_command_failed` | 503 | An ip or wg command failed. |\n| `interface_ownership_mismatch` | 503 | The interface name belongs to a link the controller does not own. |\n| `interface_name_in_use` | 503 | The interface name belongs to a link that is not WireGuard. |\n| `database_unavailable` | 503 | The database did not answer. |",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Problem type URI (`/api/v1/problems/CODE`) documenting the error code."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short human-readable summary for this error code."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP status code.",
+            "minimum": 0
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Specific explanation of what failed in this request, when applicable."
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Request occurrence URI (`urn:uuid:REQUEST-ID`), matching `x-request-id` and server logs."
+          },
+          "code": {
+            "$ref": "#/components/schemas/Code"
+          }
+        }
+      },
+      "Psk": {
+        "type": "object",
+        "description": "Preshared key update request; specify either `generate: true` or `preshared_key`.",
+        "properties": {
+          "preshared_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Base64 preshared key, or empty to clear it.",
+            "default": null
+          },
+          "generate": {
+            "type": "boolean",
+            "description": "Whether the server should generate a random preshared key.",
+            "default": false
+          }
+        }
+      },
+      "Quota": {
+        "type": "object",
+        "description": "Address limits per IP family, expressed as a decimal address count or a prefix length such as\n`/64`.",
+        "properties": {
+          "ipv4": {
+            "type": "string",
+            "description": "IPv4 address limit.",
+            "default": ""
+          },
+          "ipv6": {
+            "type": "string",
+            "description": "IPv6 address limit.",
+            "default": ""
+          }
+        }
+      },
+      "RouteProfile": {
+        "type": "object",
+        "description": "Named set of `AllowedIPs` that a client can select for its local tunnel routes. Selecting a\nprofile changes only the client's `AllowedIPs`, leaving the server's peer routes unchanged.",
+        "required": [
+          "id",
+          "name",
+          "allowed_ips"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Profile identifier: a DNS label that is unique within the interface."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name shown to users in the portal and agent UI."
+          },
+          "allowed_ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Client-side `AllowedIPs` prefixes routed through the tunnel when this profile is active."
+          }
+        }
+      },
+      "SessionView": {
+        "type": "object",
+        "description": "Current browser session details.",
+        "required": [
+          "account_id",
+          "admin",
+          "expires_at",
+          "csrf_token"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "admin": {
+            "type": "boolean",
+            "description": "Whether the session has administrator privileges, as determined by `oidc.admin_groups` at\nsign-in."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "csrf_token": {
+            "type": "string",
+            "description": "CSRF token for the session, also set in the `__Host-ito_csrf` cookie. Must be sent in the\n`X-CSRF-Token` header on every request other than `GET` and `HEAD`."
+          }
+        }
+      },
+      "Settings": {
+        "type": "object",
+        "description": "Mutable device settings; omitted fields remain unchanged.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "dns_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "DNS label for the device in its interface's zone, or empty to opt out of DNS publication.",
+            "default": null
+          },
+          "paused": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "agent": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Device agent credential, sent as `Authorization: Bearer itoa_SECRET`."
+      },
+      "csrf": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "description": "CSRF token read from the `__Host-ito_csrf` cookie and sent in the `X-CSRF-Token` header on mutating requests."
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-ito_session",
+        "description": "Browser session secret sent in the `__Host-ito_session` cookie (`ito_session` when `cookie_secure = false`)."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "session",
+      "description": "OpenID Connect sign-in and browser session management."
+    },
+    {
+      "name": "accounts",
+      "description": "User accounts, account policies, SCIM status checks, and audit logs. Members can read their own account; administrators can manage all accounts."
+    },
+    {
+      "name": "interfaces",
+      "description": "Configured WireGuard interfaces, address pools, server public keys, and kernel reconciliation state."
+    },
+    {
+      "name": "devices",
+      "description": "WireGuard peer devices, keys, address grants, and agent claim approvals. Members manage their own devices; administrators manage all devices."
+    },
+    {
+      "name": "agent",
+      "description": "Endpoints called by the host agent (`ito-agent`) using a per-device bearer credential."
+    }
+  ]
+}
