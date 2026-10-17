@@ -60,6 +60,7 @@
         "issuer": "",
         "client_id": "",
         "secret_file": "",
+        "allowed_groups": [],
         "admin_groups": []
       }
     },
@@ -143,6 +144,19 @@
             "/etc/ito/oidc.secret"
           ],
           "default": ""
+        },
+        "allowed_groups": {
+          "description": "Group names in the ID token's `groups` claim that permit sign-in. Empty allows any authenticated user.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "examples": [
+            [
+              "ito-users"
+            ]
+          ],
+          "default": []
         },
         "admin_groups": {
           "description": "Group names in the ID token's `groups` claim that grant administrator privileges for the session.",

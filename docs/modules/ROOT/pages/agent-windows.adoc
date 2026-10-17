@@ -11,7 +11,7 @@ Both `ito-agent.exe` and `ito-tray.exe` are native Win32 binaries that do not re
 
 == Installation
 
-Replace `VERSION` in the installer filenames below with the release version (for example, `0.1.0`).
+Replace `VERSION` in the installer filenames below with the release version (for example, `0.1.1`).
 
 === Installer bundle (`ItoSetup-VERSION-x64.exe`)
 

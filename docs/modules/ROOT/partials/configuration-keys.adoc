@@ -61,6 +61,10 @@ OpenID Connect relying-party settings for browser sign-in.
 |required
 |Absolute path to the file containing the OIDC client secret. Re-read on each use so secret rotation does not require a restart. For example `"/etc/ito/oidc.secret"`.
 
+|`allowed_groups`
+|`[]`
+|Group names in the ID token's `groups` claim that permit sign-in. Empty allows any authenticated user.
+
 |`admin_groups`
 |`[]`
 |Group names in the ID token's `groups` claim that grant administrator privileges for the session.

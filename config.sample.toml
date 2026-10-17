@@ -11,6 +11,8 @@ issuer = "https://id.example.com/realms/ito"
 client_id = "ito"
 secret_file = "/etc/ito/oidc.secret"
 admin_groups = ["ito-admins"]
+# Optional sign-in restriction:
+# allowed_groups = ["ito-users", "ito-admins"]
 
 # WireGuard interface and address pools allocated to devices.
 [interfaces.wg0]

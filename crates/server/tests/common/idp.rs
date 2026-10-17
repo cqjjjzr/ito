@@ -63,7 +63,7 @@ pub struct IdToken {
     pub nonce: String,
     pub challenge: String,
     pub azp: String,
-    pub groups: Vec<String>,
+    pub groups: Option<serde_json::Value>,
 }
 
 impl Idp {
@@ -117,7 +117,8 @@ struct IdTokenResponder {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Groups {
-    groups: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    groups: Option<serde_json::Value>,
 }
 
 impl openidconnect::AdditionalClaims for Groups {}

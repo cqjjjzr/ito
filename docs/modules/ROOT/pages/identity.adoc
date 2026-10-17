@@ -9,9 +9,24 @@ Register a confidential OIDC client with the following settings:
 * **Grant type**: Authorization Code flow with PKCE (`S256`).
 * **Redirect URI**: `PUBLIC_URL/api/v1/auth/callback` (using the exact `public_url` from `config.toml`).
 * **Scopes**: Include `profile` so that ID tokens carry the user's display `name`.
-* **Group claim**: Include a `groups` claim in the ID token containing an array of group name strings. Configure `oidc.admin_groups` with the group names that grant administrator privileges.
+* **Group claim**: Include a `groups` claim in the ID token containing an array of group name strings. Configure `oidc.allowed_groups` to restrict sign-in, and `oidc.admin_groups` to grant administrator privileges.
 
 Save the client secret to the file configured in `oidc.secret_file` and restrict its permissions to the controller user.
+
+=== Restricting sign-in by group
+
+Set `oidc.allowed_groups` to admit only users whose verified ID token contains at least one of those groups:
+
+[source,toml]
+----
+[oidc]
+allowed_groups = ["ito-users", "ito-admins"]
+admin_groups = ["ito-admins"]
+----
+
+Names match exactly, including case and any path prefix supplied by the provider. Administrator groups do not bypass this check; include them in `allowed_groups` if they should have access. An omitted or empty list permits any authenticated user.
+
+Admission is checked at sign-in. Changing group membership does not revoke existing sessions or device keys; block the account to revoke access immediately.
 
 === Sign-in flow and session handling
 

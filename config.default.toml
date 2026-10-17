@@ -49,6 +49,10 @@ key_lifetime = "365days"
 # Required.
 # secret_file = "/etc/ito/oidc.secret"
 
+# Group names in the ID token's `groups` claim that permit sign-in. Empty allows any authenticated
+# user.
+allowed_groups = []
+
 # Group names in the ID token's `groups` claim that grant administrator privileges for the session.
 admin_groups = []
 

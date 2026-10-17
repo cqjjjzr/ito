@@ -12,11 +12,12 @@ use chrono::{TimeDelta, Utc};
 use ito::{
     accounts,
     config::{Config, Scim},
-    db::account::IdpStatus,
+    db::{account, account::IdpStatus, session},
     error::{Code, internal},
     identity,
 };
-use serde_json::Value;
+use sea_orm::EntityTrait;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
 
 /// Signs in to `idp`, where the group `/ito-admins` grants administrator rights.
@@ -48,7 +49,7 @@ impl SignIn {
             nonce: self.query["nonce"].clone(),
             challenge: self.query["code_challenge"].clone(),
             azp: azp.into(),
-            groups: groups.iter().map(|g| g.to_string()).collect(),
+            groups: Some(json!(groups)),
         }
     }
 }
@@ -137,6 +138,75 @@ async fn other_groups_sign_in_as_members() {
     let env = start_env_with(|c| use_idp(c, &idp)).await;
     let reply = sign_in_at_idp(&env, &idp, &["/staff"]).await;
     assert_eq!(read_session(&env, &reply).await["admin"], false);
+}
+
+#[tokio::test]
+async fn allowed_groups_admit_members_without_changing_admin_rights() {
+    for (groups, admin) in [
+        (vec!["/staff", "/ito-users"], false),
+        (vec!["/ito-admins"], true),
+    ] {
+        let idp = start_idp().await;
+        let env = start_env_with(|c| {
+            use_idp(c, &idp);
+            c.oidc.allowed_groups = vec!["/ito-users".into(), "/ito-admins".into()];
+        })
+        .await;
+        let reply = sign_in_at_idp(&env, &idp, &groups).await;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.text);
+        assert_eq!(read_session(&env, &reply).await["admin"], admin);
+    }
+}
+
+#[tokio::test]
+async fn denied_groups_create_no_account_or_session_and_skip_scim() {
+    for groups in [
+        None,
+        Some(json!([])),
+        Some(json!(["/staff"])),
+        Some(json!(["/ito-admins"])),
+        Some(json!(["ito-users"])),
+        Some(json!(["/ITO-USERS"])),
+        Some(json!("/ito-users")),
+        Some(json!(["/ito-users", null])),
+    ] {
+        let idp = start_idp().await;
+        let env = start_env_with(|c| {
+            use_idp(c, &idp);
+            c.oidc.allowed_groups = vec!["/ito-users".into()];
+            use_scim(c, &idp);
+        })
+        .await;
+        let sign_in = start_sign_in(&env).await;
+        let mut token = sign_in.issue_token("portal", &[]);
+        token.groups = groups.clone();
+        idp.serve_id_token(token).await;
+        let state = &sign_in.query["state"];
+        let reply = return_from_idp(&env, &sign_in, &format!("code=abc&state={state}")).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::FORBIDDEN,
+            "{groups:?}: {}",
+            reply.text
+        );
+        assert_eq!(reply.code(), "forbidden");
+        assert!(!reply.headers.contains_key("set-cookie"));
+        assert!(
+            account::Entity::find()
+                .all(&env.app.db.conn)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            session::Entity::find()
+                .all(&env.app.db.conn)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(idp.count_scim_lookups().await, 0);
+    }
 }
 
 #[tokio::test]

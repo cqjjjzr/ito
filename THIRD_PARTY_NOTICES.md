@@ -4031,7 +4031,7 @@ SOFTWARE.
 
 ## MIT License
 
-Used by: ito-agent-core 0.1.0, ito-agent 0.1.0, ito-agent-windows 0.1.0, ito 0.1.0, ito-shared 0.1.0, ito-tray 0.1.0, async-stream-impl 0.3.6, async-stream 0.3.6, chrono 0.4.45, libm 0.2.16, sea-bae 0.2.2, sea-query-derive 1.0.0, sea-query-sqlx 0.9.1, sqlx-core 0.9.0, sqlx-sqlite 0.9.0, xshell-macros 0.2.7
+Used by: ito-agent-core 0.1.1, ito-agent 0.1.1, ito-agent-windows 0.1.1, ito 0.1.1, ito-shared 0.1.1, ito-tray 0.1.1, async-stream-impl 0.3.6, async-stream 0.3.6, chrono 0.4.45, libm 0.2.16, sea-bae 0.2.2, sea-query-derive 1.0.0, sea-query-sqlx 0.9.1, sqlx-core 0.9.0, sqlx-sqlite 0.9.0, xshell-macros 0.2.7
 
 ```text
 MIT License

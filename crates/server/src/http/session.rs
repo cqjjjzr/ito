@@ -108,6 +108,13 @@ pub async fn finish_login(
         identity::oidc::complete_login(&app, &build_callback_url(&app), code, verifier, nonce)
             .await?;
     let (subject, name, groups) = (claims.subject, claims.name, claims.groups);
+    if !app.config.oidc.allowed_groups.is_empty()
+        && !groups
+            .iter()
+            .any(|g| app.config.oidc.allowed_groups.contains(g))
+    {
+        return Err(forbidden().detail("your groups do not permit sign-in to this server"));
+    }
     let admin = groups
         .iter()
         .any(|g| app.config.oidc.admin_groups.contains(g));

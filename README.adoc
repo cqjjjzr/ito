@@ -42,7 +42,7 @@ Install the Debian package on Debian or Ubuntu:
 
 [source,sh]
 ----
-sudo apt install ./ito_0.1.0-1_amd64.deb
+sudo apt install ./ito_0.1.1-1_amd64.deb
 sudo install -d -m 700 /etc/ito/keys
 (umask 077; wg genkey | sudo tee /etc/ito/keys/wg0.key >/dev/null)
 sudoedit /etc/ito/config.toml

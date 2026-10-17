@@ -10,7 +10,7 @@ Install the `.deb` package with `apt`:
 
 [source,sh]
 ----
-sudo apt install ./ito_0.1.0-1_amd64.deb
+sudo apt install ./ito_0.1.1-1_amd64.deb
 ----
 
 The package installs:

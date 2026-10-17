@@ -423,6 +423,10 @@ pub struct Oidc {
     /// rotation does not require a restart.
     #[schemars(example = &"/etc/ito/oidc.secret")]
     pub secret_file: PathBuf,
+    /// Group names in the ID token's `groups` claim that permit sign-in. Empty allows any
+    /// authenticated user.
+    #[schemars(example = ["ito-users"])]
+    pub allowed_groups: Vec<String>,
     /// Group names in the ID token's `groups` claim that grant administrator privileges for the
     /// session.
     #[schemars(example = ["ito-admins"])]
@@ -436,6 +440,9 @@ impl Oidc {
             return Err("oidc.client_id is required".into());
         }
         validate_absolute("oidc.secret_file", &self.secret_file)?;
+        if self.allowed_groups.iter().any(String::is_empty) {
+            return Err("oidc.allowed_groups must not contain empty names".into());
+        }
         if self.admin_groups.iter().any(String::is_empty) {
             return Err("oidc.admin_groups must not contain empty names".into());
         }
@@ -863,6 +870,9 @@ mod tests {
             }),
             ("empty admin group", "oidc.admin_groups", |c| {
                 c.oidc.admin_groups.push(String::new());
+            }),
+            ("empty allowed group", "oidc.allowed_groups", |c| {
+                c.oidc.allowed_groups.push(String::new());
             }),
             ("SCIM not HTTP", "scim.url", |c| {
                 add_scim(c).url = "ldap://id.example.com".into();

@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "ito"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "ito-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "ito-agent-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2421,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "ito-agent-windows"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "ito-shared"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "ito-tray"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "embed-resource",
