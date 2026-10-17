@@ -1,0 +1,4 @@
+// The application manifest, as resource 1 of type RT_MANIFEST (24).
+1 24 "ito-tray.manifest"
+// The program's icon, web/public/logo.svg at 16 to 256 pixels, as icon 1.
+1 ICON "ito.ico"
