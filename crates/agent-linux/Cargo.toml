@@ -2,6 +2,7 @@
 name = "ito-agent"
 description = "Connects a Linux host to Ito controllers as their devices"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,9 +26,6 @@ tempfile.workspace = true
 workspace = true
 
 [package.metadata.deb]
-name = "ito-agent"
-maintainer = "Ito contributors <noreply@localhost>"
-copyright = "Ito contributors"
 section = "net"
 extended-description = "Connects this host to Ito controllers as their devices and keeps each WireGuard tunnel in step with its device."
 depends = "$auto, ca-certificates, iproute2, wireguard-tools"

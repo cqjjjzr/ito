@@ -2,6 +2,7 @@
 name = "ito-agent-windows"
 description = "Connects a Windows host to Ito controllers through WireGuard for Windows"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

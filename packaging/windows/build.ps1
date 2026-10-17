@@ -1,4 +1,6 @@
 # Build on Windows with the repository's Rust toolchain, MSVC C++ tools and the pinned .NET SDK.
+param([switch] $TestOnly)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -30,12 +32,13 @@ function Build-Binaries {
     # Always invoke Cargo; it decides which compilation work is stale.
     Run cargo @('build', '--release', '--locked', '--target', $target, '-p', 'ito-agent-windows', '-p', 'ito-tray') | Out-Host
     $metadata = (Run cargo @('metadata', '--locked', '--no-deps', '--format-version', '1')) | ConvertFrom-Json
-    $version = ($metadata.packages | Where-Object name -eq 'ito-agent-windows').version
+    $package = $metadata.packages | Where-Object name -eq 'ito-agent-windows'
+    $version = $package.version
     if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Windows packages require a three-part numeric version' }
     $builtVersion = Run "$root\target\$target\release\ito-agent.exe" @('--version')
     if ($builtVersion -ne "ito-agent $version") { throw "Stale agent binary ($builtVersion); clean the Windows release build and rebuild" }
     Copy-Item "$root\target\$target\release\ito-agent.exe", "$root\target\$target\release\ito-tray.exe", "$root\LICENSE.txt" $stage
-    return $version
+    return $package
 }
 function Write-Notices {
     Write-Host 'Generating third-party notices'
@@ -73,13 +76,14 @@ function Get-WireGuardMsi {
 
 # --- WiX MSI and Burn bundle ---
 
-function New-Packages([string] $Version, [string] $WireGuardMsi) {
+function New-Packages($Package, [string] $WireGuardMsi) {
     Write-Host 'Building MSI and setup bundle'
+    $version = $Package.version
     Push-Location $PSScriptRoot
     try {
         Run dotnet @('--version')
         Run dotnet @('restore', 'bundle/ItoSetup.wixproj', '--locked-mode')
-        Run dotnet @('build', 'bundle/ItoSetup.wixproj', '--no-restore', '-c', 'Release', "-p:ProductVersion=$version", "-p:WireGuardMsi=$WireGuardMsi")
+        Run dotnet @('build', 'bundle/ItoSetup.wixproj', '--no-restore', '-c', 'Release', "-p:ProductVersion=$version", "-p:ProductManufacturer=$($Package.authors[0])", "-p:ProductDescription=$($Package.description)", "-p:WireGuardMsi=$WireGuardMsi")
         Copy-Item 'package/bin/Release/Ito.msi' "$output\Ito-$Version-x64.msi"
         Copy-Item 'bundle/bin/Release/ItoSetup.exe' "$output\ItoSetup-$Version-x64.exe"
     } finally { Pop-Location }
@@ -98,17 +102,18 @@ function Write-Checksums([string] $Version, [string] $WireGuardMsi) {
 
 # --- Build pipeline ---
 
-New-Item -ItemType Directory -Force $stage, $output | Out-Null
 Push-Location $root
 $previousFlags = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS
 try {
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
     Test-Code
-    $version = Build-Binaries
+    if ($TestOnly) { return }
+    New-Item -ItemType Directory -Force $stage, $output | Out-Null
+    $package = Build-Binaries
     Write-Notices
     $wireguardName = Get-WireGuardMsi
-    New-Packages $version $wireguardName
-    Write-Checksums $version $wireguardName
+    New-Packages $package $wireguardName
+    Write-Checksums $package.version $wireguardName
     Write-Host "Packages: $output"
 } finally {
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = $previousFlags

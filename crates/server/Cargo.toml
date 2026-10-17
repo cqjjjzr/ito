@@ -2,6 +2,7 @@
 name = "ito"
 description = "A control plane for WireGuard allowing self-service of VPN users"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -49,8 +50,6 @@ wiremock.workspace = true
 workspace = true
 
 [package.metadata.deb]
-maintainer = "Ito contributors <noreply@localhost>"
-copyright = "Ito contributors"
 section = "net"
 extended-description = "A control plane for WireGuard allowing self-service of VPN users."
 depends = "$auto, ca-certificates, iproute2, wireguard-tools"

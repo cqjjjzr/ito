@@ -1,13 +1,73 @@
 = Ito
 
-Ito is a self-service WireGuard control plane for Linux hosts. Users sign in through an OpenID Connect provider, register their devices, and receive tunnel addresses from configured IPv4 and IPv6 pools. Host agents for Linux and Windows keep local tunnels synchronized with the controller.
+Ito is a self-service WireGuard control plane for a single Linux host. Users sign in through an OpenID Connect (OIDC) provider, register their devices, and receive tunnel addresses from configured IPv4 and IPv6 pools. Dedicated host agents for Linux and Windows configure local tunnels, negotiate routes, and renew expiring WireGuard keys automatically.
 
-The documentation lives in `docs/`. Build it with `just build-docs` and open `build/site/index.html`. Start with:
+The project is heavily inspired by https://github.com/h44z/wg-portal[wg-portal], with greatly cut down functionalities to stay simple for the server part.
 
-* `docs/modules/ROOT/pages/index.adoc`: overview and features.
-* `docs/modules/ROOT/pages/install.adoc`: installation on Debian, Docker, NixOS, or from source.
-* `docs/modules/ROOT/pages/development.adoc`: building, testing, and regenerating generated files.
+== Key features
+
+* *Self-service web portal*: Users authenticate with their identity provider, view active peers, register devices, download WireGuard `.conf` files, or scan QR codes.
+* *Address pools and quotas*: Allocates IPv4 and IPv6 addresses and routed prefixes from per-interface pools while enforcing per-account quota limits.
+* *Host agents for Linux and Windows*: The `ito-agent` CLI and Windows background service synchronize local tunnels with the server. On Windows, `ito-tray` provides a native Win32 system tray menu for connection state, routing profiles, and quick approvals.
+* *Raw WireGuard user support*: Ito doesn't force usage of agents. Native WireGuard user can get their configurations from the web portal.
+* *Browser-approved agent enrollment*: Authorize a new agent installation by running `ito-agent login` and approving an 8-character confirmation code in the web portal.
+* *Automated key expiration and rotation*: Public keys enforce configurable lifetimes. Host agents automatically generate and rotate client side keypairs before expiration.
+* *External identity provider only*: Ito supports no local users. All authN is provided by an external IdP using OpenID Connect (OIDC); optional SCIM 2.0 polling detects suspended or deleted identity provider accounts to revoke access automatically.
+* *Authoritative split-horizon DNS*: An optional built-in DNS server answers A and AAAA queries for registered device hostnames within configured interface zones.
+* *Simple Deploy*: Single Rust binary with SQLite and a Linux box with WireGuard suffice.
+
+== Architecture and workflow
+
+=== Components
+
+* *Controller (`ito`)*: Tokio + Axum serving HTTP API and drives local WireGuard using `wg` and `ip`.
+* *Linux agent (`ito-agent`)*: A background CLI client and systemd service that configures local WireGuard tunnels via `ip`, `wg`, `nftables`, and `systemd-resolved`.
+* *Windows agent and tray (`ito-agent`, `ito-tray`)*: A Windows service configuring WireGuard through the native WireGuard for Windows runtime, alongside a Win32 system tray application communicating with the service over local named pipes.
+
+=== Deployment and usage workflow
+
+. *Server setup*: The administrator deploys `ito` on a Linux gateway host, creates a server private key, and defines interfaces, IP pools, and OIDC credentials in `/etc/ito/config.toml`.
+. *User sign-in*: Users visit the web portal and authenticate against the configured OIDC provider.
+. *Device enrollment*:
+* *Standalone WireGuard clients*: Users create a device in the web portal, provide or generate a public key, and download the `.conf` file or scan a QR code on mobile.
+* *Managed hosts*: Users install `ito-agent`, run `ito-agent login <portal-url>`, and approve the 8-character confirmation code displayed on their terminal in the web portal.
+. *Kernel reconciliation*: The controller commits device records and address allocations to SQLite, applies the new peers and AllowedIPs to the Linux kernel interface, and updates authoritative DNS zone records.
+. *Continuous synchronization*: Host agents poll the server to detect configuration updates, adjust local routes when routing profiles change, and rotate expiring keypairs automatically.
+
+== How to run
+
+=== Debian package
+
+Install the Debian package on Debian or Ubuntu:
+
+[source,sh]
+----
+sudo apt install ./ito_0.1.0-1_amd64.deb
+sudo install -d -m 700 /etc/ito/keys
+(umask 077; wg genkey | sudo tee /etc/ito/keys/wg0.key >/dev/null)
+sudoedit /etc/ito/config.toml
+sudo ito --check-config
+sudo systemctl enable --now ito
+----
+
+=== Building from source
+
+Refer to documentation below.
+
+== Documentation
+
+Detailed guides and references live in link:docs/modules/ROOT/pages/index.adoc[`docs/`]. You can build the standalone documentation site using `just build-docs` (requires Antora) and open `build/site/index.html`.
+
+* link:docs/modules/ROOT/pages/index.adoc[Overview and Features]
+* link:docs/modules/ROOT/pages/architecture.adoc[Architecture & Internal Design]
+* link:docs/modules/ROOT/pages/configuration.adoc[Configuration File Reference]
+* link:docs/modules/ROOT/pages/install.adoc[Installation Guide (Debian, Docker, NixOS)]
+* link:docs/modules/ROOT/pages/identity.adoc[Identity Provider Setup (OIDC & SCIM)]
+* link:docs/modules/ROOT/pages/operations.adoc[Operations, Metrics & Logging]
+* link:docs/modules/ROOT/pages/agent-linux.adoc[Linux Host Agent Guide]
+* link:docs/modules/ROOT/pages/agent-windows.adoc[Windows Host Agent & System Tray Guide]
+* link:docs/modules/ROOT/pages/development.adoc[Development, Testing & CI Guide]
 
 == License
 
-MIT. Third-party dependency licenses are listed in `THIRD_PARTY_NOTICES.md`.
+MIT. Third-party dependency licenses are listed in link:THIRD_PARTY_NOTICES.md[THIRD_PARTY_NOTICES.md].

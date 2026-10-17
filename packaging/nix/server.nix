@@ -1,6 +1,7 @@
 { lib, rustPlatform, stdenvNoCC, fetchPnpmDeps, pnpmConfigHook, pnpm_10, nodejs, makeWrapper, cacert
 , iproute2, wireguard-tools, version ? (lib.importTOML ../../Cargo.toml).workspace.package.version }:
 let
+  package = (lib.importTOML ../../crates/server/Cargo.toml).package;
   # Frontend assets embedded into the server binary from web/dist.
   web = stdenvNoCC.mkDerivation (finalAttrs: {
     pname = "ito-web";
@@ -34,7 +35,7 @@ let
   });
 in
 rustPlatform.buildRustPackage {
-  pname = "ito";
+  pname = package.name;
   inherit version;
   src = lib.fileset.toSource {
     root = ../../.;
@@ -56,9 +57,9 @@ rustPlatform.buildRustPackage {
       config.default.toml config.schema.json
   '';
   meta = {
-    description = "A control plane for WireGuard allowing self-service of VPN users";
+    inherit (package) description;
     license = lib.licenses.mit;
-    mainProgram = "ito";
+    mainProgram = package.name;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
 }

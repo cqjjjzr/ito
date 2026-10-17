@@ -1,5 +1,8 @@
-name: CI
-on: [push, pull_request]
+name: Test
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -11,28 +14,13 @@ jobs:
           package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
-      - run: sudo apt-get update && sudo apt-get install -y just
+          node-version: '26'
+          check-latest: true
+      - uses: extractions/setup-just@v4
       - run: just build-web
       - run: just check test-rust test-web
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: sudo apt-get update && sudo apt-get install -y just
-      - run: just build-docs
   windows:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: packaging/windows/global.json
-      - run: pwsh -NoProfile -File packaging/windows/build.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ito-windows-x64
-          path: dist/windows/x64/
+      - run: pwsh -NoProfile -File packaging/windows/build.ps1 -TestOnly

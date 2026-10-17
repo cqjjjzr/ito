@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Bundle Name="Ito" Manufacturer="Ito" Version="$(var.ProductVersion)" UpgradeCode="018B8980-E8C0-41A9-B218-119652A5EE88" IconSourceFile="$(sys.SOURCEFILEDIR)..\..\..\crates\tray-windows\ito.ico">
+  <Bundle Name="Ito" Manufacturer="$(var.ProductManufacturer)" Version="$(var.ProductVersion)" Copyright="$(var.ProductManufacturer)" UpgradeCode="018B8980-E8C0-41A9-B218-119652A5EE88" IconSourceFile="$(sys.SOURCEFILEDIR)..\..\..\crates\tray-windows\ito.ico">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" LogoFile="$(sys.SOURCEFILEDIR)logo.png" LaunchTarget="[InstallFolder]\ito-tray.exe" />
     </BootstrapperApplication>

@@ -5,6 +5,6 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <StageDir>$(MSBuildThisFileDirectory)..\..\build\windows\x64</StageDir>
-    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);StageDir=$(StageDir);WireGuardMsi=$(WireGuardMsi)</DefineConstants>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);ProductManufacturer=$(ProductManufacturer);ProductDescription=$(ProductDescription);StageDir=$(StageDir);WireGuardMsi=$(WireGuardMsi)</DefineConstants>
   </PropertyGroup>
 </Project>

@@ -21,7 +21,14 @@ async function importRouter() {
   return { visit, session, pageProblem }
 }
 
-beforeEach(() => sessionStorage.clear())
+beforeEach(() => {
+  const storage = new Map<string, string>()
+  vi.stubGlobal('sessionStorage', {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  })
+})
 afterEach(() => vi.unstubAllGlobals())
 
 describe('router', () => {

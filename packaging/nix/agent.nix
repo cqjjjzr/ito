@@ -1,8 +1,11 @@
 { lib, rustPlatform, makeWrapper, cacert, iproute2, wireguard-tools, nftables, systemd
 , version ? (lib.importTOML ../../Cargo.toml).workspace.package.version }:
 
+let
+  package = (lib.importTOML ../../crates/agent-linux/Cargo.toml).package;
+in
 rustPlatform.buildRustPackage {
-  pname = "ito-agent";
+  pname = package.name;
   inherit version;
   src = lib.fileset.toSource {
     root = ../..;
@@ -21,9 +24,9 @@ rustPlatform.buildRustPackage {
     install -Dm644 -t "$out/share/doc/ito-agent" LICENSE.txt THIRD_PARTY_NOTICES.md
   '';
   meta = {
-    description = "Connects a Linux host to Ito controllers and synchronizes its WireGuard tunnels";
+    inherit (package) description;
     license = lib.licenses.mit;
-    mainProgram = "ito-agent";
+    mainProgram = package.name;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
 }

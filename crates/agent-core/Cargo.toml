@@ -2,6 +2,7 @@
 name = "ito-agent-core"
 description = "What Ito agents share: the controller client, connections and keeping them in sync"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

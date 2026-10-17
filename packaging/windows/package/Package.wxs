@@ -1,5 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Package Name="Ito" Manufacturer="chariri" Version="$(var.ProductVersion)" UpgradeCode="6C491FE5-56BF-48A3-A207-F6B0DAB4829A" Scope="perMachine">
+  <Package Name="Ito" Manufacturer="$(var.ProductManufacturer)" Version="$(var.ProductVersion)" UpgradeCode="6C491FE5-56BF-48A3-A207-F6B0DAB4829A" Scope="perMachine">
+    <SummaryInformation Description="$(var.ProductDescription)" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of Ito is already installed." Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="ito.ico" SourceFile="$(sys.SOURCEFILEDIR)..\..\..\crates\tray-windows\ito.ico" />

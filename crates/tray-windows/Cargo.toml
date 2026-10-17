@@ -2,6 +2,7 @@
 name = "ito-tray"
 description = "The tray of the Ito agent for Windows"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
