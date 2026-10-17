@@ -26,7 +26,10 @@ fn generated_config_files_are_current() {
             std::fs::write(&path, &text).unwrap();
         }
         let published = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(published == text, "{path} is stale; run `just config-docs`");
+        assert!(
+            published == text,
+            "{path} is stale; run `just generate-config`"
+        );
     }
 }
 
@@ -318,7 +321,7 @@ fn append_comment(out: &mut String, text: &str, prefix: &str) {
 fn render_defaults(schema: &Value) -> String {
     let mut out = String::from(
         "# Default values, or examples for keys without a default.\n\
-         # Generated from crates/server/src/config.rs by `just config-docs`.\n",
+         # Generated from crates/server/src/config.rs by `just generate-config`.\n",
     );
     for section in collect_sections(schema) {
         let off = if section.optional { "# " } else { "" };
@@ -350,7 +353,7 @@ fn render_defaults(schema: &Value) -> String {
 /// Renders the AsciiDoc reference tables for `configuration.adoc`.
 fn render_reference(schema: &Value) -> String {
     let mut out = String::from(
-        "// Generated from crates/server/src/config.rs by `just config-docs`; edit the doc comments there.\n",
+        "// Generated from crates/server/src/config.rs by `just generate-config`; edit the doc comments there.\n",
     );
     for section in collect_sections(schema) {
         let (anchor, title) = match (section.name(), section.header()) {

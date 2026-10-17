@@ -1,5 +1,5 @@
 # Default values, or examples for keys without a default.
-# Generated from crates/server/src/config.rs by `just config-docs`.
+# Generated from crates/server/src/config.rs by `just generate-config`.
 
 # Socket address for the HTTP listener. Deploy a TLS-terminating reverse proxy in front of this
 # address.

@@ -1,4 +1,4 @@
-//! The published OpenAPI document must match the code. `just openapi` rewrites it.
+//! The published OpenAPI document must match the code. `just generate-openapi` rewrites it.
 
 #[test]
 fn published_spec_is_current() {
@@ -11,7 +11,10 @@ fn published_spec_is_current() {
         std::fs::write(path, &spec).unwrap();
     }
     let published = std::fs::read_to_string(path).unwrap_or_default();
-    assert!(published == spec, "{path} is stale; run `just openapi`");
+    assert!(
+        published == spec,
+        "{path} is stale; run `just generate-openapi`"
+    );
 }
 
 #[test]

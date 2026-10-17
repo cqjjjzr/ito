@@ -1,0 +1,43 @@
+{
+  "realm": "ito",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{ "name": "ito-admins" }],
+  "clients": [
+    {
+      "clientId": "ito",
+      "secret": "demo-secret",
+      "redirectUris": ["http://localhost:8000/api/v1/auth/callback"],
+      "attributes": { "post.logout.redirect.uris": "http://localhost:8000/" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": { "claim.name": "groups", "full.path": "false", "id.token.claim": "true" }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "firstName": "Ada",
+      "lastName": "Admin",
+      "email": "admin@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "admin" }],
+      "groups": ["/ito-admins"]
+    },
+    {
+      "username": "alice",
+      "firstName": "Alice",
+      "lastName": "Liddell",
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "alice" }]
+    }
+  ]
+}

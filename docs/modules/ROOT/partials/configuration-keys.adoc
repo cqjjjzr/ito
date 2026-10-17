@@ -1,4 +1,4 @@
-// Generated from crates/server/src/config.rs by `just config-docs`; edit the doc comments there.
+// Generated from crates/server/src/config.rs by `just generate-config`; edit the doc comments there.
 
 [#top-level]
 == Top level

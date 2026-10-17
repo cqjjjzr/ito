@@ -2,7 +2,7 @@
 
 Ito is built from the crates below.
 
-Generated with `just notices`.
+Generated with `just generate-notices`.
 
 ## Apache License 2.0
 
