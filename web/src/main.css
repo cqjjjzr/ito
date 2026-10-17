@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* The brand palette around #ffc9d7, which is the 400 shade. */
+@theme static {
+  --color-ito-50: #fff5f8;
+  --color-ito-100: #ffecf1;
+  --color-ito-200: #ffdde6;
+  --color-ito-300: #ffd3de;
+  --color-ito-400: #ffc9d7;
+  --color-ito-500: #f59fb6;
+  --color-ito-600: #e07494;
+  --color-ito-700: #c04e72;
+  --color-ito-800: #9c3c5a;
+  --color-ito-900: #7f344c;
+  --color-ito-950: #4a1828;
+}
+
+:root,
+.dark {
+  --ui-primary: var(--ui-color-primary-400);
+}

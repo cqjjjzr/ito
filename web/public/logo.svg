@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke-linecap="round">
+  <defs><clipPath id="ball"><circle cx="28" cy="28" r="22"/></clipPath></defs>
+  <path d="M44 43c5 6 3 14 10 14 3 0 5-2 7-5" stroke="#ffc9d7" stroke-width="3"/>
+  <circle cx="28" cy="28" r="22" fill="#ffc9d7"/>
+  <g clip-path="url(#ball)" stroke="#c04e72" stroke-width="1.8" opacity=".7">
+    <g transform="rotate(-40 28 28)">
+      <ellipse cx="28" cy="28" rx="22" ry="5"/>
+      <ellipse cx="28" cy="28" rx="22" ry="11"/>
+      <ellipse cx="28" cy="28" rx="22" ry="17"/>
+    </g>
+    <g transform="rotate(35 18 40)">
+      <ellipse cx="18" cy="40" rx="26" ry="7"/>
+      <ellipse cx="18" cy="40" rx="26" ry="14"/>
+    </g>
+  </g>
+  <circle cx="28" cy="28" r="22" stroke="#c04e72" stroke-width="1.5" opacity=".5"/>
+</svg>
