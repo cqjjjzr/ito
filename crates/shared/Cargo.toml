@@ -1,0 +1,26 @@
+[package]
+name = "ito-shared"
+description = "WireGuard helpers and API types shared by the Ito controller and its agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+getrandom.workspace = true
+ipnet.workspace = true
+serde = { workspace = true, features = ["derive"] }
+utoipa = { workspace = true, features = ["chrono", "preserve_order"], optional = true }
+x25519-dalek = "3"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[features]
+# OpenAPI schemas for the controller's API document.
+openapi = ["dep:utoipa"]
+
+[lints]
+workspace = true

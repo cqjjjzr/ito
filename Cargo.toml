@@ -1,0 +1,41 @@
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/shared"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.23"
+chrono = "0.4"
+clap = "4"
+getrandom = "0.4"
+ipnet = "2"
+ito-agent-core = { path = "crates/agent-core" }
+ito-shared = { path = "crates/shared" }
+libc = "0.2"
+mockall = "0.15"
+reqwest = { version = "0.13", default-features = false }
+serde = "1"
+serde_json = "1"
+sha2 = "0.11"
+tempfile = "3"
+tokio = "1"
+url = "2"
+utoipa = "6.0.0"
+windows-sys = "0.61"
+wiremock = "0.6"
+xshell = "0.2.7"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"
+panic = "abort"

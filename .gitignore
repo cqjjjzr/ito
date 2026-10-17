@@ -1,0 +1,9 @@
+/target/
+/dist/
+/build/
+*.db
+*.db-shm
+*.db-wal
+.vscode
+.idea
+/result

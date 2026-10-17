@@ -1,0 +1,8 @@
+# Generated files
+Cargo.lock linguist-generated
+web/pnpm-lock.yaml linguist-generated
+THIRD_PARTY_NOTICES.md linguist-generated
+config.default.toml linguist-generated
+config.schema.json linguist-generated
+docs/modules/ROOT/attachments/openapi.json linguist-generated
+docs/modules/ROOT/partials/configuration-keys.adoc linguist-generated
