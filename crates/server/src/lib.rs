@@ -4,6 +4,7 @@ pub mod approvals;
 pub mod config;
 pub mod db;
 pub mod devices;
+pub mod dns;
 pub mod error;
 pub mod identity;
 pub mod kernel;
