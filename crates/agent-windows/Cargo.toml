@@ -1,0 +1,38 @@
+[package]
+name = "ito-agent-windows"
+description = "Connects a Windows host to Ito controllers through WireGuard for Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ito-agent"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+clap = { workspace = true, features = ["derive"] }
+ito-agent-core = { workspace = true, features = ["cli"] }
+ito-shared.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+mockall.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
