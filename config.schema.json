@@ -1,0 +1,513 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "Controller configuration loaded from TOML.",
+  "type": "object",
+  "properties": {
+    "listen": {
+      "description": "Socket address for the HTTP listener. Deploy a TLS-terminating reverse proxy in front of this address.",
+      "type": "string",
+      "default": "127.0.0.1:8000"
+    },
+    "metrics_listen": {
+      "description": "Socket address for the Prometheus `/metrics` listener. Leave unset to disable the metrics listener.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "examples": [
+        "127.0.0.1:8001"
+      ],
+      "default": null
+    },
+    "public_url": {
+      "description": "External browser origin of the service: scheme, lowercase host, and optional non-default port, with no path or trailing slash. Used to validate the `Origin` header on state-changing requests and to construct the OIDC redirect URI.",
+      "type": "string",
+      "format": "uri",
+      "examples": [
+        "https://vpn.example.com"
+      ],
+      "default": ""
+    },
+    "cookie_secure": {
+      "description": "Whether session and login cookies set the `Secure` attribute and `__Host-` prefix. Set to `false` only for local plain-HTTP testing.",
+      "type": "boolean",
+      "default": true
+    },
+    "database": {
+      "description": "Absolute path to the SQLite database file. The controller holds an exclusive file lock on this path while running.",
+      "type": "string",
+      "default": "/var/lib/ito/ito.db"
+    },
+    "session_lifetime": {
+      "description": "Maximum lifetime of a browser session before the user must sign in again.",
+      "type": "string",
+      "default": "12h"
+    },
+    "session_idle": {
+      "description": "Maximum idle time between requests for a browser session. Must not exceed `session_lifetime`.",
+      "type": "string",
+      "default": "1h"
+    },
+    "key_lifetime": {
+      "description": "Validity period of a device's WireGuard public key after it is set or renewed, at least 4 days. When a key expires, the reconciler removes the peer from the kernel until a key is set again.",
+      "type": "string",
+      "default": "365days"
+    },
+    "oidc": {
+      "$ref": "#/$defs/Oidc",
+      "default": {
+        "issuer": "",
+        "client_id": "",
+        "secret_file": "",
+        "admin_groups": []
+      }
+    },
+    "scim": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Scim"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "interfaces": {
+      "description": "Managed WireGuard interfaces keyed by Linux interface name (which also serves as the interface ID in the API).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Interface"
+      },
+      "default": {}
+    },
+    "dns": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Dns"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quota": {
+      "$ref": "#/$defs/DefaultQuota",
+      "default": {
+        "ipv4": "16",
+        "ipv6": "/64"
+      }
+    },
+    "log": {
+      "$ref": "#/$defs/Log",
+      "default": {
+        "level": "info,hickory_server=warn",
+        "requests": false,
+        "format": "auto"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "public_url",
+    "oidc"
+  ],
+  "$defs": {
+    "Oidc": {
+      "description": "OpenID Connect relying-party settings for browser sign-in.",
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "description": "OpenID Connect issuer URL.",
+          "type": "string",
+          "format": "uri",
+          "examples": [
+            "https://id.example.com/realms/ito"
+          ],
+          "default": ""
+        },
+        "client_id": {
+          "description": "OAuth 2.0 client ID for browser sign-in.",
+          "type": "string",
+          "examples": [
+            "ito"
+          ],
+          "default": ""
+        },
+        "secret_file": {
+          "description": "Absolute path to the file containing the OIDC client secret. Re-read on each use so secret rotation does not require a restart.",
+          "type": "string",
+          "examples": [
+            "/etc/ito/oidc.secret"
+          ],
+          "default": ""
+        },
+        "admin_groups": {
+          "description": "Group names in the ID token's `groups` claim that grant administrator privileges for the session.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "examples": [
+            [
+              "ito-admins"
+            ]
+          ],
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "client_id",
+        "secret_file"
+      ]
+    },
+    "Scim": {
+      "description": "Optional SCIM 2.0 user status polling. When configured, the controller checks user status at sign-in and periodically on `interval`, revoking sessions and device keys when an account is disabled or deleted at the identity provider.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Base URL of the SCIM 2.0 service.",
+          "type": "string",
+          "format": "uri",
+          "examples": [
+            "https://id.example.com/realms/ito/scim/v2"
+          ],
+          "default": ""
+        },
+        "client_id": {
+          "description": "OAuth 2.0 client ID used for client-credentials token requests to the SCIM API.",
+          "type": "string",
+          "examples": [
+            "ito-status"
+          ],
+          "default": ""
+        },
+        "secret_file": {
+          "description": "Absolute path to the file containing the SCIM client secret.",
+          "type": "string",
+          "examples": [
+            "/etc/ito/status.secret"
+          ],
+          "default": ""
+        },
+        "health_subject": {
+          "description": "SCIM User ID of a canary account that remains permanently enabled. Before acting on a negative lookup result (disabled or 404), the controller verifies that this canary user is still reported as active, preventing upstream directory outages from mass-revoking accounts.",
+          "type": "string",
+          "examples": [
+            "00000000-0000-0000-0000-000000000000"
+          ],
+          "default": ""
+        },
+        "interval": {
+          "description": "Interval between background SCIM status sweeps across all accounts.",
+          "type": "string",
+          "default": "6h"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "client_id",
+        "secret_file"
+      ]
+    },
+    "Interface": {
+      "description": "WireGuard interface configuration, address pools, and client configuration hints.",
+      "type": "object",
+      "properties": {
+        "private_key_file": {
+          "description": "Absolute path to the server's WireGuard private key file (as generated by `wg genkey`). Read once at startup.",
+          "type": "string",
+          "examples": [
+            "/etc/ito/keys/wg0.key"
+          ],
+          "writeOnly": true
+        },
+        "listen_port": {
+          "description": "UDP port the server interface listens on.",
+          "type": "integer",
+          "format": "int32",
+          "examples": [
+            51820
+          ],
+          "default": 0
+        },
+        "endpoint": {
+          "description": "External `host:port` endpoint that clients connect to.",
+          "type": "string",
+          "examples": [
+            "vpn.example.com:51820"
+          ],
+          "default": ""
+        },
+        "addresses": {
+          "description": "CIDR addresses assigned to the server interface, such as `10.0.0.1/24`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "examples": [
+            [
+              "10.0.0.1/24",
+              "fd00::1/64"
+            ]
+          ],
+          "default": []
+        },
+        "mtu": {
+          "description": "MTU of the server interface.",
+          "type": "integer",
+          "format": "int32",
+          "default": 1420
+        },
+        "disabled": {
+          "description": "When `true`, the reconciler brings the interface down and removes all peers.",
+          "type": "boolean",
+          "default": false
+        },
+        "client_mtu": {
+          "description": "Suggested MTU for client configs, or `0` to let the client choose automatically.",
+          "type": "integer",
+          "format": "int32",
+          "default": 0
+        },
+        "dns": {
+          "description": "DNS server IP addresses included in client configs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "dns_search": {
+          "description": "DNS search domains included in client configs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "dns_zone": {
+          "description": "Authoritative DNS zone served by `[dns]` for devices on this interface, or empty to disable. Multiple interfaces can share a zone. Also appended to the client's DNS search domains after `dns_search`.",
+          "type": "string",
+          "examples": [
+            "vpn.example.com"
+          ],
+          "default": ""
+        },
+        "keepalive": {
+          "description": "PersistentKeepalive interval in seconds for client configs, or `0` to disable.",
+          "type": "integer",
+          "format": "int32",
+          "default": 0
+        },
+        "default_profile_id": {
+          "description": "ID of the default route profile for clients, or empty when `route_profiles` is empty.",
+          "type": "string",
+          "default": ""
+        },
+        "route_profiles": {
+          "description": "Named sets of client-side `AllowedIPs` that users can choose between.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteProfile"
+          },
+          "default": []
+        },
+        "pools": {
+          "description": "Address pools from which device addresses and prefix grants are allocated.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Pool"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "private_key_file",
+        "listen_port",
+        "endpoint"
+      ]
+    },
+    "RouteProfile": {
+      "description": "Named set of `AllowedIPs` that a client can select for its local tunnel routes. Selecting a profile changes only the client's `AllowedIPs`, leaving the server's peer routes unchanged.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Profile identifier: a DNS label that is unique within the interface.",
+          "type": "string",
+          "examples": [
+            "all"
+          ]
+        },
+        "name": {
+          "description": "Display name shown to users in the portal and agent UI.",
+          "type": "string",
+          "examples": [
+            "All traffic"
+          ]
+        },
+        "allowed_ips": {
+          "description": "Client-side `AllowedIPs` prefixes routed through the tunnel when this profile is active.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "examples": [
+            [
+              "0.0.0.0/0",
+              "::/0"
+            ]
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "allowed_ips"
+      ]
+    },
+    "Pool": {
+      "description": "Address pool from which device addresses and routed prefixes are allocated.",
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "description": "CIDR prefix of the pool, such as `10.0.0.0/24`. Pools must not overlap within or across interfaces.",
+          "type": "string",
+          "examples": [
+            "10.0.0.0/24"
+          ]
+        },
+        "min_prefix_length": {
+          "description": "Minimum prefix length (largest block size) a single grant from this pool may have. When unset, only single-host grants (`/32` or `/128`) are allowed.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "examples": [
+            28
+          ],
+          "default": null
+        },
+        "max_prefixes": {
+          "description": "Maximum number of grants a single device may hold from this pool.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 1
+        },
+        "exclusions": {
+          "description": "Sub-prefixes inside the pool that are reserved and never allocated to devices.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "prefix"
+      ]
+    },
+    "Dns": {
+      "description": "Optional authoritative DNS server for interface `dns_zone` domains. Publishes `A` and `AAAA` records at `<dns_name>.<dns_zone>` for each device that has a `dns_name`.",
+      "type": "object",
+      "properties": {
+        "listen": {
+          "description": "UDP and TCP socket address for the authoritative DNS listener.",
+          "type": "string",
+          "default": "[::1]:53"
+        },
+        "name_server": {
+          "description": "Authoritative nameserver hostname placed in zone `NS` and `SOA` records. Must lie outside every configured `dns_zone` and resolve independently, because the server does not publish glue records.",
+          "type": "string",
+          "examples": [
+            "vpn.example.com"
+          ],
+          "default": ""
+        },
+        "ttl": {
+          "description": "Time to live in seconds for DNS records and negative caching responses.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "default": 60
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name_server"
+      ]
+    },
+    "DefaultQuota": {
+      "description": "Default per-account address limits. Each limit is a decimal address count (such as `\"16\"`), a CIDR prefix length (such as `\"/64\"`), or `\"\"` for unlimited. Administrators can override these defaults on individual accounts.",
+      "type": "object",
+      "properties": {
+        "ipv4": {
+          "description": "Default IPv4 address limit per account.",
+          "type": "string",
+          "default": "16"
+        },
+        "ipv6": {
+          "description": "Default IPv6 address limit per account.",
+          "type": "string",
+          "default": "/64"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Log": {
+      "description": "Logging configuration.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Log filter directives in `tracing_subscriber::EnvFilter` syntax, such as `info` or `info,ito::reconcile=debug`.",
+          "type": "string",
+          "default": "info,hickory_server=warn"
+        },
+        "requests": {
+          "description": "Whether to log every HTTP response at `info` level. Leave `false` when the reverse proxy already records access logs.",
+          "type": "boolean",
+          "default": false
+        },
+        "format": {
+          "description": "Output format: `auto` (systemd journal when stderr is connected to journald, otherwise plain text on stderr), `text` (plain text on stderr), or `json` (newline-delimited JSON on stderr).",
+          "$ref": "#/$defs/LogFormat",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LogFormat": {
+      "description": "Log output format.",
+      "oneOf": [
+        {
+          "description": "Native systemd journal when stderr is connected to journald, otherwise plain text.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Plain text on stderr.",
+          "type": "string",
+          "const": "text"
+        },
+        {
+          "description": "Newline-delimited JSON (JSONL) on stderr.",
+          "type": "string",
+          "const": "json"
+        }
+      ]
+    }
+  }
+}

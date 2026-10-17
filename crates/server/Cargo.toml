@@ -1,0 +1,66 @@
+[package]
+name = "ito"
+description = "A control plane for WireGuard allowing self-service of VPN users"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum = "0.8"
+base64.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive", "env"] }
+getrandom.workspace = true
+hickory-proto = "0.26"
+hickory-server = "0.26"
+humantime = "2"
+ito-shared = { workspace = true, features = ["openapi"] }
+ipnet = { workspace = true, features = ["serde"] }
+libc.workspace = true
+openidconnect = { version = "4", default-features = false }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+schemars = { version = "1.2", features = ["preserve_order"] }
+sea-orm = { version = "2", default-features = false, features = ["macros", "with-chrono", "with-json", "sqlx-sqlite", "runtime-tokio"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net", "time", "sync", "process", "io-util"] }
+toml = "1"
+tower-http = { version = "0.7", features = ["timeout", "trace", "request-id"] }
+tracing = "0.1"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+utoipa = { workspace = true, features = ["axum_extras", "chrono", "preserve_order", "preserve_path_order"] }
+utoipa-axum = "0.3"
+uuid = { version = "1", features = ["v7"] }
+xshell.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }
+wiremock.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+maintainer = "Ito contributors <noreply@localhost>"
+copyright = "Ito contributors"
+section = "net"
+extended-description = "A control plane for WireGuard allowing self-service of VPN users."
+depends = "$auto, ca-certificates, iproute2, wireguard-tools"
+conf-files = ["/etc/ito/config.toml"]
+maintainer-scripts = "../../packaging/debian/"
+systemd-units = { enable = false, start = false }
+assets = [
+    ["target/release/ito", "usr/bin/", "755"],
+    ["../../config.sample.toml", "etc/ito/config.toml", "600"],
+    ["../../THIRD_PARTY_NOTICES.md", "usr/share/doc/ito/", "644"],
+    ["../../config.default.toml", "usr/share/doc/ito/", "644"],
+    ["../../config.schema.json", "usr/share/doc/ito/", "644"],
+]

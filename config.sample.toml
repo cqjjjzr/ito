@@ -1,0 +1,40 @@
+# Sample configuration showing required keys and common options.
+# Full defaults and documentation are in config.default.toml.
+
+public_url = "https://vpn.example.com"
+
+# Optional Prometheus metrics listener:
+# metrics_listen = "127.0.0.1:8001"
+
+[oidc]
+issuer = "https://id.example.com/realms/ito"
+client_id = "ito"
+secret_file = "/etc/ito/oidc.secret"
+admin_groups = ["ito-admins"]
+
+# WireGuard interface and address pools allocated to devices.
+[interfaces.wg0]
+private_key_file = "/etc/ito/keys/wg0.key"
+listen_port = 51820
+endpoint = "vpn.example.com:51820"
+addresses = ["10.0.0.1/24", "fd00::1/64"]
+# Optional DNS zone served by the [dns] listener below:
+# dns_zone = "vpn.example.com"
+
+[[interfaces.wg0.pools]]
+prefix = "10.0.0.0/24"
+
+[[interfaces.wg0.pools]]
+prefix = "fd00::/64"
+
+# Optional SCIM 2.0 polling to revoke disabled or deleted accounts:
+# [scim]
+# url = "https://id.example.com/realms/ito/scim/v2"
+# client_id = "ito-status"
+# secret_file = "/etc/ito/status.secret"
+# Canary user ID for federated directories (such as LDAP):
+# health_subject = "00000000-0000-0000-0000-000000000000"
+
+# Optional authoritative DNS server for interface zones:
+# [dns]
+# name_server = "ns1.example.com"

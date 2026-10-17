@@ -1,0 +1,7 @@
+# Editors with a taplo-based TOML language server (Even Better TOML, Helix, Zed) check the sample
+# configuration against the generated schema and offer completion and documentation on hover.
+[[rule]]
+include = ["config.sample.toml"]
+
+[rule.schema]
+path = "./config.schema.json"
