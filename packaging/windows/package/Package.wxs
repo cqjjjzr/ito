@@ -1,0 +1,83 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Ito" Manufacturer="chariri" Version="$(var.ProductVersion)" UpgradeCode="6C491FE5-56BF-48A3-A207-F6B0DAB4829A" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Ito is already installed." Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ito.ico" SourceFile="$(sys.SOURCEFILEDIR)..\..\..\crates\tray-windows\ito.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ito.ico" />
+
+    <!-- Discover existing WireGuard installation -->
+    <Property Id="WIREGUARD_SERVICE">
+      <RegistrySearch Id="WireGuardServiceSearch" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\WireGuardManager" Name="ImagePath" Type="raw" Bitness="always64" />
+    </Property>
+    <Upgrade Id="5E5A1DA5-BA36-404D-92EC-41050D1C799C">
+      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="WIREGUARD_PRODUCT" />
+    </Upgrade>
+    <Property Id="WIREGUARD_EXE">
+      <DirectorySearch Id="WireGuardDirectory" Path="[ProgramFiles64Folder]WireGuard">
+        <FileSearch Id="WireGuardExecutable" Name="wireguard.exe" />
+      </DirectorySearch>
+    </Property>
+    <Launch Condition="Installed OR WIREGUARD_SERVICE OR WIREGUARD_PRODUCT OR WIREGUARD_EXE" Message="Install WireGuard for Windows first, or use the Ito setup bundle to install both." />
+
+    <!-- Preserve installation folder across upgrades -->
+    <!-- Record the Ito's installation folder. This ensures updating preserves the installation folder. -->
+    <Property Id="RECORDEDINSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="InstallFolderSearch" Root="HKLM" Key="Software\Ito" Name="InstallFolder" Type="raw" />
+    </Property>
+    <!-- Restore the recorded installation folder. -->
+    <SetProperty Id="INSTALLFOLDER" Value="[RECORDEDINSTALLFOLDER]" Before="CostInitialize" Sequence="both" Condition="RECORDEDINSTALLFOLDER AND NOT INSTALLFOLDER" />
+
+    <!-- Close running tray before updating or removing -->
+    <util:CloseApplication Id="CloseTray" Target="ito-tray.exe" CloseMessage="yes" ElevatedCloseMessage="yes" RebootPrompt="no" TerminateProcess="0" Timeout="5" />
+
+    <!-- Installation directory and components -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Ito">
+        <!-- Agent Windows service -->
+        <Component Id="Agent">
+          <!-- Restrict INSTALLFOLDER write access to SYSTEM and administrators. -->
+          <CreateFolder>
+            <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)" />
+          </CreateFolder>
+          <!-- Save the installation folder for upgrades. -->
+          <RegistryValue Root="HKLM" Key="Software\Ito" Name="InstallFolder" Value="[INSTALLFOLDER]" Type="string" />
+
+          <File Id="AgentExe" Source="$(var.StageDir)\ito-agent.exe" KeyPath="yes" />
+          <ServiceInstall Id="AgentService" Name="ItoAgent" DisplayName="Ito agent" Description="Keeps this computer's Ito connections in step, as WireGuard tunnels." Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service" Vital="yes">
+            <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart" ResetPeriodInDays="1" RestartServiceDelayInSeconds="10" />
+          </ServiceInstall>
+          <ServiceControl Id="AgentControl" Name="ItoAgent" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+
+          <Environment Id="AgentPath" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="yes" />
+        </Component>
+
+        <!-- System tray and ito-wg: URL scheme -->
+        <Component Id="Tray">
+          <File Id="TrayExe" Source="$(var.StageDir)\ito-tray.exe" KeyPath="yes" />
+          <Shortcut Id="TrayShortcut" Directory="ProgramMenuFolder" Name="Ito" Advertise="yes" Icon="ito.ico" />
+          <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Ito" Value="&quot;[#TrayExe]&quot;" Type="string" />
+
+          <RegistryValue Root="HKLM" Key="Software\Classes\ito-wg" Value="URL:Ito" Type="string" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\ito-wg" Name="URL Protocol" Value="" Type="string" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\ito-wg\shell\open\command" Value="&quot;[#TrayExe]&quot; --open &quot;%1&quot;" Type="string" />
+        </Component>
+
+        <!-- License and third-party notices -->
+        <Component Id="License">
+          <File Source="$(var.StageDir)\LICENSE.txt" />
+        </Component>
+        <Component Id="Notices">
+          <File Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Feature tree -->
+    <Feature Id="Main">
+      <ComponentRef Id="Agent" />
+      <ComponentRef Id="Tray" />
+      <ComponentRef Id="License" />
+      <ComponentRef Id="Notices" />
+    </Feature>
+  </Package>
+</Wix>

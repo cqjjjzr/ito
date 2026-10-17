@@ -1,0 +1,7 @@
+.git
+.jj
+target
+dist
+*.db*
+web/node_modules
+web/dist

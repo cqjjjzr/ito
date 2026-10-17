@@ -1,0 +1,29 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="Ito" Manufacturer="Ito" Version="$(var.ProductVersion)" UpgradeCode="018B8980-E8C0-41A9-B218-119652A5EE88" IconSourceFile="$(sys.SOURCEFILEDIR)..\..\..\crates\tray-windows\ito.ico">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" LogoFile="$(sys.SOURCEFILEDIR)logo.png" LaunchTarget="[InstallFolder]\ito-tray.exe" />
+    </BootstrapperApplication>
+    <!-- Resolve installation folder -->
+    <!-- Default to the recorded installation folder on upgrade, or ProgramFiles64Folder\Ito on
+         fresh install. Overridable from the Options page or via InstallFolder=PATH on the command line. -->
+    <Variable Name="InstallFolder" bal:Overridable="yes" />
+    <util:RegistrySearch Id="RecordedInstallFolderSearch" Variable="RecordedInstallFolder" Root="HKLM" Key="Software\Ito" Value="InstallFolder" Bitness="always64" Result="value" />
+    <SetVariable Id="RecordedInstallFolder" Variable="InstallFolder" Value="[RecordedInstallFolder]" Type="formatted" Condition="NOT InstallFolder AND RecordedInstallFolder" After="RecordedInstallFolderSearch" />
+    <SetVariable Id="DefaultInstallFolder" Variable="InstallFolder" Value="[ProgramFiles64Folder]Ito" Type="formatted" Condition="NOT InstallFolder" After="RecordedInstallFolder" />
+
+    <!-- Discover existing WireGuard installation -->
+    <util:RegistrySearch Id="WireGuardServiceSearch" Variable="WireGuardService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\WireGuardManager" Value="ImagePath" Bitness="always64" Result="exists" />
+    <util:ProductSearch Id="WireGuardProductSearch" Variable="WireGuardProduct" UpgradeCode="5E5A1DA5-BA36-404D-92EC-41050D1C799C" Result="exists" />
+    <util:FileSearch Id="WireGuardExecutableSearch" Variable="WireGuardExecutable" Path="[ProgramFiles64Folder]WireGuard\wireguard.exe" Result="exists" />
+
+    <!-- Install WireGuard (if absent) and Ito -->
+    <Chain>
+      <MsiPackage Id="WireGuard" SourceFile="$(var.StageDir)\$(var.WireGuardMsi)" DownloadUrl="https://download.wireguard.com/windows-client/$(var.WireGuardMsi)" Compressed="no" Permanent="yes" Visible="yes" InstallCondition="NOT (WireGuardService OR WireGuardProduct OR WireGuardExecutable)">
+        <MsiProperty Name="DO_NOT_LAUNCH" Value="1" />
+      </MsiPackage>
+      <MsiPackage Id="Ito" SourceFile="$(var.Ito.TargetPath)">
+        <MsiProperty Name="INSTALLFOLDER" Value="[InstallFolder]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

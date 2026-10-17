@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <AcceptEula>wix7</AcceptEula>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <StageDir>$(MSBuildThisFileDirectory)..\..\build\windows\x64</StageDir>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);StageDir=$(StageDir);WireGuardMsi=$(WireGuardMsi)</DefineConstants>
+  </PropertyGroup>
+</Project>

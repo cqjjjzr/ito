@@ -1,0 +1,19 @@
+# cargo-about takes the first of these that a crate offers. Short licenses come first, so crates
+# offering one under "OR Apache-2.0" add their short text rather than another copy of Apache-2.0.
+accepted = [
+    "MIT",
+    "ISC",
+    "0BSD",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+ignore-dev-dependencies = true

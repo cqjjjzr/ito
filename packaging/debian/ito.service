@@ -1,0 +1,25 @@
+[Unit]
+Description=Ito
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+StateDirectory=ito
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/ito
+UMask=0077
+ExecStart=/usr/bin/ito --config /etc/ito/config.toml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
