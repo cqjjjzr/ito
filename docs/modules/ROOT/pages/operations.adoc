@@ -1,0 +1,124 @@
+= Operations
+
+[#database]
+== Database storage and backups
+
+The controller stores its state in a single SQLite file created at startup with mode `0600`. Store the database file on a local filesystem. SQLite file locking and write-ahead logging (`WAL`) do not operate reliably over NFS or other network filesystems.
+
+The database stores SHA-256 digests of session and agent bearer secrets rather than the raw secrets. It stores device WireGuard preshared keys in plaintext so the controller can include them in client configurations. Keep database backups private, and back up `/etc/ito/config.toml` and all secret files alongside the database.
+
+=== Backing up and restoring
+
+Because recent writes may reside in the write-ahead log (`ito.db-wal`), copying `ito.db` directly while the service runs can produce an inconsistent backup. Use SQLite's online backup command instead:
+
+[source,sh]
+----
+sqlite3 /var/lib/ito/ito.db ".backup /var/backups/ito-backup.db"
+----
+
+To restore from a backup:
+
+. Stop the `ito` service.
+. Remove `/var/lib/ito/ito.db-wal` and `/var/lib/ito/ito.db-shm`.
+. Copy the backup file to `/var/lib/ito/ito.db` with mode `0600`.
+. Start the `ito` service. The reconciler will update the kernel WireGuard interfaces to match the restored database state.
+
+== Kernel reconciliation
+
+The controller identifies WireGuard interfaces that it manages by setting their netlink interface alias to `ito:\{interface_name}`.
+
+* When an interface is configured, the controller creates the link with alias `ito:\{interface_name}` and configures its private key, listen port, MTU, IP addresses, link state, and peers.
+* Creating a link and setting its alias are separate kernel commands. If setting the alias fails, the controller deletes the link it just created. If the controller crashes between the two commands, the link remains without an alias and the controller refuses to take it over on restart. Inspect and delete the abandoned link manually if needed.
+* If a link with the configured name already exists with a different alias, the controller refuses to modify it and sets `apply_error` to `interface_ownership_mismatch`.
+* If an existing link on the host has an `ito:*` alias for an interface name that is no longer in `config.toml`, the controller deletes that link during reconciliation.
+* Stopping the controller service leaves the WireGuard interfaces and peers running in the kernel so active tunnels are not interrupted.
+
+The reconciler runs immediately after any database change that affects WireGuard peers and at least once every minute to repair external changes or remove expired keys. During each pass, the reconciler takes down disabled interfaces and removes revoked or expired peers before configuring interfaces and adding new peers.
+
+== Health checks and metrics
+
+The HTTP server exposes two unauthenticated health endpoints:
+
+`/health/live`:: Returns `200 OK` while the process is running.
+`/health/ready`:: Returns `200 OK` when the SQLite database responds to queries.
+
+When `metrics_listen` is configured, `/metrics` on that listener serves Prometheus gauges:
+
+[cols="1,3"]
+|===
+|Metric |Description
+
+|`ito_devices_pending` |Number of devices whose latest database revision has not yet been applied to the kernel.
+|`ito_device_apply_errors` |Number of devices whose last kernel reconciliation failed.
+|`ito_interface_apply_errors` |Number of WireGuard interfaces whose last kernel reconciliation failed.
+|`ito_account_idp_check_errors` |Number of accounts whose most recent SCIM status check failed (only exported when `[scim]` is configured).
+|===
+
+Administrators can also call `GET /api/v1/diagnostics` to inspect the live WireGuard state read back from the kernel for each interface, including peer public keys, AllowedIPs, endpoints, latest handshake timestamps, and transfer counters.
+
+[#logs]
+== Logging
+
+When running under systemd with standard error connected to the journal, the controller writes structured entries directly to `journald`. Structured attributes are indexed with an `ITO_` prefix:
+
+[source,sh]
+----
+journalctl -u ito                       # Follow service logs
+journalctl -u ito -p warning            # Show warnings and errors only
+journalctl -u ito ITO_INTERFACE=wg0     # Filter by WireGuard interface
+journalctl -u ito -o json               # Output full JSON records
+----
+
+Common structured fields include `ITO_ERROR`, `ITO_CODE`, `ITO_DETAIL`, `ITO_CAUSE`, `ITO_INTERFACE`, `ITO_ACCOUNT_ID`, `ITO_METHOD`, `ITO_PATH`, and `ITO_REQUEST_ID`.
+
+When standard error is not connected to `journald` (such as in a container), the controller writes plain-text logs to standard error by default, or newline-delimited JSON objects when `log.format = "json"`. Every HTTP response includes an `x-request-id` header matching the `ITO_REQUEST_ID` field in the logs; if a reverse proxy forwards an incoming `X-Request-Id` header, the controller reuses that value.
+
+Logs never include private keys, preshared keys, session tokens, or agent credentials.
+
+== Rotating a server private key
+
+The controller reads each interface's `private_key_file` only at startup. To rotate an interface's private key:
+
+. Keep a backup of the current key file in case you need to roll back.
+. Write a new private key to the file with `wg genkey`.
+. Restart the `ito` service.
+
+On startup, the controller applies the new private key to the kernel interface. Existing client tunnels will stop passing traffic until clients fetch their updated configuration (automatically within one minute for hosts running `ito-agent`, or manually for standalone WireGuard clients).
+
+[#interface-changes]
+== Changing interfaces and address pools
+
+Because interfaces and address pools are defined in `config.toml`, changes to them take effect when you restart the controller. If a configuration change invalidates an existing device's addresses, the reconciler removes the device's peer from the kernel and sets `disabled_reason` on the device:
+
+`outside_pools`:: One or more of the device's address grants fall outside the interface's current pools.
+`address_conflict`:: One of the device's address grants overlaps an IP address now assigned to an interface.
+`interface_not_configured`:: The device's interface name is no longer present in `config.toml`.
+
+To re-enable a device with `outside_pools` or `address_conflict`, update its addresses via `PUT /api/v1/devices/\{id}/addresses`. If an interface was removed, delete its remaining devices.
+
+== Authoritative DNS server
+
+When `[dns]` is configured, the controller runs an authoritative DNS server over UDP and TCP for every `dns_zone` assigned to an interface:
+
+* Serves `SOA` and `NS` records at each zone apex.
+* Serves `A` and `AAAA` records for every device that has a `dns_name` in its interface's `dns_zone`, using the device's allocated `/32` and `/128` tunnel addresses.
+* Returns authoritative `NXDOMAIN` or `NODATA` responses for other names inside the configured zones.
+* Returns `REFUSED` for queries outside the configured zones and for zone transfers (`AXFR`/`IXFR`).
+
+Device `dns_name` labels are unique across all interfaces, and configured `dns_zone` domains must not nest inside one another. A device retains its DNS records while paused, blocked, or expired until its `dns_name` is cleared or the device is deleted.
+
+When an interface has `dns_zone` set, the controller appends that zone to the client's DNS search domains so devices can resolve peers by short name.
+
+== Troubleshooting
+
+`another controller has the database open`::
+Another `ito` process holds the lock on the SQLite database file. Stop the other process or configure separate database paths.
+
+`interface_ownership_mismatch`::
+A network interface with the configured name already exists on the host without the `ito:\{interface_name}` alias. Delete or rename the existing interface if nothing else uses it.
+
+`secret_unavailable`::
+An OIDC or SCIM secret file is missing, unreadable, or empty. Check the file path and permissions reported in the service log.
+
+`identity_unavailable`::
+The controller could not reach the OIDC or SCIM endpoint or received an invalid response. Check the `ITO_CAUSE` field in the service log for the underlying error.

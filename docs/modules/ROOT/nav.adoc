@@ -1,0 +1,13 @@
+* xref:index.adoc[Overview]
+* Operators
+** xref:install.adoc[Install]
+** xref:configuration.adoc[Configuration]
+** xref:identity.adoc[Identity provider]
+** xref:operations.adoc[Operations]
+* Clients
+** xref:agent-linux.adoc[Linux agent]
+** xref:agent-windows.adoc[Windows agent]
+** xref:attachment$api.html[HTTP API]
+* Contributors
+** xref:architecture.adoc[Architecture]
+** xref:development.adoc[Development]

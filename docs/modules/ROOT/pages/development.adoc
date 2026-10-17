@@ -1,0 +1,77 @@
+= Development
+
+The repository uses the Rust toolchain pinned in `rust-toolchain.toml` and `just` recipes for building, testing, and regenerating documentation artifacts.
+
+Separate Rust functions, structs, and `impl` blocks with one blank line, including methods within an `impl`. Stable Rustfmt preserves these separators but does not insert missing ones.
+
+By default, `cargo build` builds the server (`ito`) and the Linux agent (`ito-agent`). Both the Linux and Windows agent crates produce a binary named `ito-agent`; use the Windows installer build script described below to build and package the Windows binaries.
+
+== Common `just` recipes
+
+Run `just` to list recipes grouped by purpose.
+
+[cols="1,3"]
+|===
+|Recipe |Description
+
+|`just build` |Builds the web portal (`web/dist`) and compiles release binaries.
+|`just build-web` |Compiles the Vue web portal into `web/dist`.
+|`just build-docs` |Builds the Antora documentation site into `build/site`.
+|`just check` |Checks Rust formatting and runs Clippy for the controller, Linux agent, and shared crates.
+|`just check-config` |Builds only the controller in debug mode and validates `config.sample.toml` (or the supplied path).
+|`just test-rust` |Runs Rust unit and integration tests for the controller, Linux agent, and shared crates.
+|`just test-web` |Runs Vitest unit tests for the web portal.
+|`just test-kernel` |Runs kernel reconciliation tests using real `ip` and `wg` commands inside an unprivileged network namespace.
+|`just test-e2e` |Runs Playwright end-to-end browser and agent tests against Keycloak and a real WireGuard tunnel.
+|`just deb-server`, `just deb-agent` |Builds Debian packages for the controller and Linux agent in `dist/` using `cargo-deb`.
+|`just generate-config` |Regenerates `config.schema.json`, `config.default.toml`, and `docs/modules/ROOT/partials/configuration-keys.adoc` from `crates/server/src/config.rs`.
+|`just generate-openapi` |Regenerates `docs/modules/ROOT/attachments/openapi.json` from the server route and schema annotations.
+|`just generate-notices` |Regenerates `THIRD_PARTY_NOTICES.md` using `cargo-about`.
+|`just demo-up` |Starts Keycloak and a local demo controller on `http://localhost:8000` (`just demo-down` stops and cleans up).
+|`just idp-up` |Starts only the local Keycloak container with the test realm from `web/e2e/realm.json` (`just idp-down` stops it).
+|===
+
+The demo and end-to-end tests share Keycloak on port 8080 and cannot run together. Startup refuses to replace an existing `ito-idp` container. Stop the demo with `just demo-down` (or a standalone identity provider with `just idp-down`) before starting another workflow. Failed startup and end-to-end tests clean up their services; if demo shutdown times out, its state is kept in `build/demo` so cleanup can be retried.
+
+== Building the Windows installer
+
+On an x64 Windows host with the MSVC C++ build tools and the .NET SDK specified in `packaging/windows/global.json`, run:
+
+[source,powershell]
+----
+pwsh -NoProfile -File packaging/windows/build.ps1
+----
+
+The script runs Clippy and unit tests for the Windows crates, compiles static MSVC release binaries, generates third-party notices, downloads the latest WireGuard MSI and verifies its Authenticode signature, and builds `Ito-VERSION-x64.msi` and `ItoSetup-VERSION-x64.exe` in `dist/windows/x64`. `VERSION` comes from `[workspace.package].version` in `Cargo.toml`. It also writes the selected WireGuard MSI filename and SHA-256 hash to `wireguard.json`.
+
+== Test suite
+
+Server integration tests are one binary, `crates/server/tests/integration/`, sharing the fixtures in `crates/server/tests/common/`. Each test runs against a fresh SQLite database, `FakeKernel` (a stateful simulator of `ip` and `wg` with fault injection, in `common/kernel.rs`) and, where identity matters, a wiremock identity provider that signs ID tokens and answers SCIM (`common/idp.rs`). Its modules follow the API: `sessions`, `requests`, `accounts`, `identity`, `interfaces`, `endpoints`, `reconcile`, `dns`, and `devices::{lifecycle, addressing, keys, psk, blocking, approvals, authorization, notifications}`. Two more binaries keep generated files current:
+
+* `openapi.rs`: Verifies that `docs/modules/ROOT/attachments/openapi.json` matches the code annotations and that error codes are published as they are sent.
+* `config_docs.rs`: Verifies that `config.schema.json`, `config.default.toml`, and `configuration-keys.adoc` match `crates/server/src/config.rs`, and checks that `config.sample.toml` does not set any key to its default value.
+
+Agent scenarios live in `crates/agent-core/src/agent/tests/`, grouped into `login`, `sync`, `routing` and `preferences`, and share a wiremock controller and a mockall tunnel driver. Unit tests for smaller modules live alongside the code they test. Tests that need a real kernel are ignored by default, are named `real_kernel_*`, and run with `just test-kernel`.
+
+Build the frontend (`just build-web`) before running server checks or tests. The server embeds `web/dist` at compile time, so rebuilding the frontend concurrently with Rust compilation can remove assets while they are being read.
+
+Frontend unit tests (`web/src/*.test.ts`) run under Vitest, one `describe` per module, and cover the API client, sessions, the router guard, page actions, device polling, embedded problems, approval boundaries, DNS labels, keys, addresses, and configuration rendering. End-to-end tests (`web/e2e/`) use Playwright, Podman (for Keycloak), and `pasta` (passt) to run the Ito server, browser, and client network namespaces in an isolated user network, testing browser login, device provisioning, `ito-agent` CLI and web-approval flows, key rotation, and tunnel connectivity.
+
+The browser harness accepts `ITO_BIN` and `ITO_AGENT_BIN` environment variables to test packaged controller and agent binaries. Each test cleans up its devices after running, and user and administrator sessions use separate browser contexts.
+
+NOTE: `just test-kernel`, `just test-e2e`, and `just demo-up` require the `wireguard` kernel module and unprivileged user namespaces. In addition, `just test-e2e` and `just demo-up` require `pasta` (from the `passt` package) and Podman. On Ubuntu or Debian systems that restrict unprivileged user namespaces via AppArmor, temporarily allow them with `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
+
+== Nix packaging
+
+Nix packages and NixOS modules live in `packaging/nix/`, exposed through the root flake. `nix build .#ito` builds the controller and `nix build .#ito-agent` builds the Linux agent. The packaging smoke test (`nix build .#checks.x86_64-linux.service`) boots a NixOS VM to check both services, the embedded web portal, state permissions, and restarts.
+
+== Version
+
+`Cargo.toml`'s `[workspace.package].version` is the single version for Rust binaries, Debian packages, Nix packages, and Windows installers. Crates inherit it with `version.workspace = true`.
+
+== Updating generated documentation
+
+Two parts of the documentation are generated directly from Rust source code and verified by CI tests:
+
+* **HTTP API specification**: Generated from `#[utoipa::path]` handler annotations, `#[derive(ToSchema)]` types, and `crates/server/src/http/api.md`. Run `just generate-openapi` after changing HTTP routes, API models, or `api.md`.
+* **Configuration reference**: Generated from doc comments, `Default` implementations, and `#[schemars(...)]` attributes in `crates/server/src/config.rs`. Run `just generate-config` after changing configuration structs or doc comments.

@@ -1,0 +1,13 @@
+= Ito
+
+Ito is a self-service WireGuard control plane for Linux hosts. Users sign in through an OpenID Connect provider, register their devices, and receive tunnel addresses from configured IPv4 and IPv6 pools. Host agents for Linux and Windows keep local tunnels synchronized with the controller.
+
+The documentation lives in `docs/`. Build it with `just build-docs` and open `build/site/index.html`. Start with:
+
+* `docs/modules/ROOT/pages/index.adoc`: overview and features.
+* `docs/modules/ROOT/pages/install.adoc`: installation on Debian, Docker, NixOS, or from source.
+* `docs/modules/ROOT/pages/development.adoc`: building, testing, and regenerating generated files.
+
+== License
+
+MIT. Third-party dependency licenses are listed in `THIRD_PARTY_NOTICES.md`.

@@ -1,0 +1,81 @@
+= Architecture
+
+The Ito controller runs as a single Rust binary on a Tokio runtime. Within one process, it runs an Axum HTTP server, a kernel reconciler task, an optional SCIM user status task, and an optional authoritative DNS server. These components coordinate through a shared SQLite database and in-process watch channels.
+
+== Workspace layout
+
+The repository is a Cargo workspace with six crates under `crates/`:
+
+`crates/shared` (`ito-shared`):: Shared types and parsers used by both the server and the host agents, including WireGuard key validation, `wg show dump` parsing, and agent HTTP API models.
+`crates/server` (`ito`):: The controller binary, HTTP API, database layer, kernel reconciler, OIDC/SCIM client, and embedded web portal.
+`crates/agent-core` (`ito-agent-core`):: Platform-independent agent logic: the HTTP client for `/api/v1/agent`, local connection storage, the `TunnelDriver` trait, background synchronization, and the IPC protocol between the agent daemon and its CLI/GUI frontends.
+`crates/agent-linux` (`ito-agent`):: Linux implementation of `TunnelDriver` using `ip`, `wg`, `nft`, and `resolvectl`.
+`crates/agent-windows` (`ito-agent-windows`, binary `ito-agent`):: Windows service and CLI implementation of `TunnelDriver` integrating with WireGuard for Windows (`wireguard.exe` and `wg.exe`) and Windows named pipes.
+`crates/tray-windows` (`ito-tray`):: Native Win32 system tray interface for the Windows agent service.
+
+The web portal in `web/` is a Vue single-page application compiled into `web/dist` and embedded into the `ito` server binary by `crates/server/build.rs`.
+
+== Server modules (`crates/server/src/`)
+
+[cols="1,3"]
+|===
+|Module |Responsibility
+
+|`error.rs` |Error types, machine-readable problem codes, and HTTP status mapping.
+|`config.rs`, `logging.rs` |TOML configuration parsing, JSON Schema generation, secret file loading, and journald/stderr log formatting.
+|`db/` |SeaORM entities, schema initialization, serialized write transactions, and post-commit change notifications.
+|`addressing/` |CIDR prefix math, address pool validation, per-account quota checks, and IPv4/IPv6 grant allocation.
+|`wireguard_keys.rs` |WireGuard public/private key validation and server private key loading.
+|`devices.rs` |Device lifecycle rules, peer eligibility checks, key binding, and route validation.
+|`approvals.rs` |In-memory store for pending agent login approvals.
+|`kernel.rs` |The `KernelDriver` trait, `LocalKernelDriver` (executing `ip` and `wg`), and the `run!` command template macro.
+|`identity/` |OIDC discovery, authorization code + PKCE verification, and SCIM 2.0 user status polling.
+|`accounts.rs` |Account creation on sign-in, quota updates, blocking, and applying SCIM status transitions.
+|`reconcile.rs` |Diffing database state against kernel state and executing `ip` and `wg` commands to converge.
+|`dns.rs` |Authoritative UDP/TCP DNS server for configured interface zones.
+|`http/` |Axum router, OpenAPI generation, authentication extractors, CSRF checks, Prometheus metrics, and API handlers.
+|`main.rs` |CLI flag parsing, startup initialization, and graceful shutdown.
+|===
+
+Domain functions in `addressing/`, `devices.rs`, and `accounts.rs` execute all reads and writes within a caller-supplied database transaction rather than opening or committing transactions themselves.
+
+== Data model and write serialization
+
+The SQLite database contains five tables: `accounts`, `sessions`, `devices`, `agent_credentials`, and `audit`. WireGuard interfaces and address pools live in `config.toml` rather than the database; each device record references its interface by name and stores its allocated CIDR grants as a JSON array. Resource identifiers are UUIDv7 strings so they sort chronologically.
+
+Safety invariants are enforced both in application logic and by unique constraints in the SQLite schema:
+
+* One account per OIDC `sub`.
+* One device per WireGuard public key and per `dns_name`.
+* One agent credential per device.
+
+Session and agent credential IDs are SHA-256 digests of random bearer secrets. Clients receive the secrets, but the database never stores them, so a copy of the database cannot authenticate. Device preshared keys are stored in plaintext so the controller can include them in client configurations.
+
+Every mutating operation acquires a process-wide asynchronous mutex via `Db::begin_write` before opening a SQLite transaction. Running admission checks (such as address overlap and account quota verification) inside this serialized write transaction prevents concurrent requests from claiming overlapping addresses or exceeding quotas. Read queries run concurrently over a connection pool without acquiring the write lock.
+
+== Change notifications
+
+As a write transaction modifies records, it records which subsystems are affected. Once the transaction commits, `Tx::commit` notifies the relevant background tasks over Tokio watch channels:
+
+* **Reconciler wake-up**: Triggered whenever a device's kernel peer configuration changes (interface, public key, AllowedIPs, preshared key, pause/block status, deletion, or key expiry) or when an account is blocked, unblocked, disabled, or enabled.
+* **DNS server wake-up**: Triggered whenever a device's `dns_name` or host addresses change, prompting the DNS server to reload its zone records from the database.
+
+Multiple notifications that arrive while a reconciliation or DNS reload pass is already running coalesce into a single follow-up pass. Metadata updates that do not affect WireGuard or DNS (such as changing a device's display name or note, or refreshing a session's idle timestamp) do not wake either task.
+
+== Kernel reconciliation loop
+
+Each reconciliation pass inspects all interfaces in a fixed order:
+
+. **Delete removed interfaces**: Any existing kernel interface carrying an `ito:*` alias whose name is no longer in `config.toml` is deleted, and its deleting devices are finalized.
+. **Compute desired state**: The reconciler loads all devices and accounts from the database and builds an `InterfaceReconcilePlan` for each configured interface. Devices whose grants no longer fit their interface's pools are excluded and marked with a `disabled_reason`.
+. **Revoke and clean up first**: Before adding any new peers or bringing links up, the reconciler takes down disabled interfaces and removes any kernel peers that should no longer exist on owned interfaces. Performing removals first ensures that revocations are not blocked by later setup errors and that a public key moving from one interface to another is removed from the old interface before being installed on the new one.
+. **Converge links and install peers**: For each enabled interface, the reconciler creates or updates the link's private key, listen port, MTU, IP addresses, and `UP` state, installs missing or changed peers, and reads back the kernel state to verify that it matches the plan.
+. **Record outcomes**: The reconciler updates `applied_revision`, `applied_enabled`, and `apply_error` on affected devices and deletes device rows whose `deleting` state has been confirmed in the kernel.
+
+In addition to event-driven wake-ups, the reconciler runs a full pass every 60 seconds to revert out-of-band kernel edits and remove peers whose public keys have expired.
+
+== Safe kernel command execution
+
+The reconciler constructs `ip` and `wg` commands with the `run!` macro (for example, `run!(k, "ip link set dev \{name} mtu \{mtu}")`), which wraps `xshell::cmd!`. The template is split into discrete argument tokens at compile time and each interpolated variable binds as a single argument, so no shell is involved; secrets go on stdin with `run!(k, "…", stdin = key)`.
+
+`LocalKernelDriver` executes each command with a 15-second timeout. Sensitive values (server private keys and device preshared keys) are piped to `wg` via standard input and never appear in command-line arguments. In integration tests, `MockKernelDriver` parses and simulates these same command argument vectors in memory.

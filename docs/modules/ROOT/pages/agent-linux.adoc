@@ -1,0 +1,113 @@
+= Linux agent
+
+`ito-agent` is a Linux daemon and CLI that connects a host to one or more Ito portals and keeps local WireGuard tunnels synchronized with the server.
+
+It runs as `root` and requires a Linux kernel with WireGuard support, `ip` (`iproute2`), and `wg` (`wireguard-tools`). When a working `resolvectl` (`systemd-resolved`) is available, the agent also configures per-interface DNS servers and search domains. A missing or stopped resolver leaves DNS alone and never prevents a tunnel from connecting.
+
+DNS is a saved per-connection preference: `ito-agent login PORTAL --no-dns` saves a new connection with controller DNS disabled, and `ito-agent dns NAME off` or `on` changes it later. The same preference applies on Windows.
+
+== Installation
+
+Build the agent package with `just deb-agent`, or obtain the matching `ito-agent` Debian package.
+Install it on the host that will join the VPN:
+
+[source,sh]
+----
+sudo apt install ./ito-agent_*.deb
+----
+
+The package installs the command, enables and starts its systemd unit, and pulls in the required networking tools and CA certificates.
+Then log in as shown below; the service keeps saved connections synchronized after the CLI exits.
+
+=== NixOS
+
+Build the agent with `nix build .#ito-agent`. To install its CLI and enable the daemon on NixOS, add the flake's agent module to your system configuration:
+
+[source,nix]
+----
+{
+  imports = [ ito.nixosModules.ito-agent ];
+  services.ito-agent.enable = true;
+}
+----
+
+Here `ito` is the flake input shown in xref:install.adoc#_nixos[the NixOS installation example]. The module loads WireGuard and creates `/var/lib/ito-agent` with mode `0700`. The package supplies `ip`, `wg`, `nft`, and `resolvectl`; enable `services.resolved.enable` separately if you want per-interface DNS. Log in with the CLI after rebuilding the system; connection credentials stay in the agent's state directory.
+
+== Logging in and connecting a host
+
+To register a host interactively:
+
+[source,sh]
+----
+sudo ito-agent login https://vpn.example.com --connect
+----
+
+. `ito-agent` generates a WireGuard key pair locally on the host and prints an approval URL along with a verification code (such as `3F9A-1C2E`).
+. Open the URL in any browser where you are signed in to the portal, verify that the code matches, and select an existing device or create a new one.
+. Alternatively, click *Connect a computer* in a device's menu in the web portal to copy a `login` command pre-filled with `--device ID`.
+
+Each saved connection is named `ito-<short-id>` (using the last eight hex digits of the device UUID, such as `ito-05c7ff30`) and creates a local WireGuard interface with the same name.
+
+* Re-running `login` for a device that is already configured on the host renews its existing connection rather than creating a duplicate.
+* If the host has other saved connections to the same portal, `login` lists them and prompts whether to log them out. Pass `--logout-others` or `--keep-others` to skip the prompt.
+* When `--connect` is passed, the agent brings the tunnel up immediately unless another connected tunnel has an identical route prefix. If you log out the conflicting connection at the prompt, the agent then connects the new tunnel.
+
+=== Non-interactive login from scripts
+
+Scripts can run `ito-agent login --json` and approve the login request through `POST /api/v1/devices/\{id}/claims` using an authenticated portal session:
+
+[source,sh]
+----
+ito-agent login https://vpn.example.com --device "$DEVICE" --connect --json | {
+  read -r request
+  curl --fail -X POST "https://vpn.example.com/api/v1/devices/$DEVICE/claims" \
+    -b "__Host-ito_session=$SESSION" -H "X-CSRF-Token: $CSRF" \
+    -H 'Origin: https://vpn.example.com' -H 'Content-Type: application/json' \
+    -d "$(jq -c '{id: .request, t: .requested_at}' <<<"$request")"
+  cat
+}
+----
+
+With `--json`, `ito-agent` prints the pending request JSON on the first line, waits for approval, and prints the final connection JSON on the last line without interactive prompts.
+
+== CLI reference
+
+[cols="1,3"]
+|===
+|Command |Description
+
+|`ito-agent login PORTAL` |Authenticates through the portal and saves a device connection.
+|`ito-agent list` |Lists all saved connections on the host.
+|`ito-agent status NAME` |Displays device metadata, available route profiles, and local/remote tunnel state. Pass `--json` for JSON output.
+|`ito-agent up NAME` |Brings the connection's WireGuard tunnel up and marks it enabled.
+|`ito-agent down NAME` |Brings the connection's WireGuard tunnel down and marks it disabled.
+|`ito-agent profile NAME ID` |Selects route profile `ID` from the profiles offered by the server, keeping any saved local override.
+|`ito-agent profile NAME --allowed-ips 10.20.0.0/16,fd20::/64` |Saves and selects a local `AllowedIPs` override. With no prefixes after `--allowed-ips`, the tunnel routes nothing.
+|`ito-agent dns NAME on\|off` |Saves whether the connection uses the controller's DNS servers and search domains.
+|`ito-agent rotate-key NAME` |Generates a new WireGuard key pair on the host and binds the new public key on the server.
+|`ito-agent rotate-psk NAME` |Requests a new preshared key from the server.
+|`ito-agent logout NAME` |Brings the tunnel down, revokes the device on the server (its agent credential and key), and deletes the local connection file.
+|`ito-agent run` |Runs the background synchronization loop for all saved connections (used by `ito-agent.service`).
+|===
+
+Saved connections are stored as mode `0600` JSON files in `/var/lib/ito-agent` by default. Each file holds the agent credential, private key, and connection preferences. Override the directory with `--state-dir` or `ITO_AGENT_STATE`. The directory must be mode `0700` and owned by the user running the agent; the agent never modifies the permissions of an existing directory.
+
+A malformed connection file is reported without stopping synchronization for other connections. A connection whose tunnel fails stays in an error state and retries until it succeeds or is disconnected.
+
+== Background synchronization and routing
+
+`ito-agent run` syncs each saved connection with the server once per minute, and again whenever `ip monitor` reports a route or address change. CLI commands apply their own changes immediately:
+
+* **Configuration sync**: Uses HTTP `ETag` caching (`If-None-Match`) so unchanged configurations require no payload transfer. Whenever a device's addresses, preshared key, endpoint, or route profile change, the agent reconfigures the tunnel.
+* **Automatic key renewal**: Renews the device's current WireGuard key when it is within 3 days of expiring. The controller's `key_lifetime` is at least 4 days, so a renewed key is outside that window.
+* **Offline resilience**: If the controller is unreachable, active tunnels continue running with their last known configuration. If the controller rejects the agent credential with `401 Unauthorized`, the agent takes the tunnel down and marks the connection as revoked.
+* **Default route policy routing**: When the active route profile includes a default route (`0.0.0.0/0` or `::/0`), the agent configures policy routing using a dedicated routing table and `fwmark` (starting from `51820`), similar to `wg-quick`. The assigned table number is recorded in `tunnels/\{name}.table` inside the state directory so rules are cleaned up cleanly across restarts.
+* **Reverse-path filtering (`nft`)**: When `nft` is installed on a default-route tunnel, the agent sets `net.ipv4.conf.all.src_valid_mark=1` and installs an `nft` table that marks incoming WireGuard replies so they pass strict reverse-path filtering (`rp_filter=1`), while dropping spoofed packets addressed to the tunnel from other interfaces. Without `nft`, hosts using `rp_filter=1` must either install equivalent `conntrack` mark rules or set `rp_filter=2`.
+
+== Route conflicts
+
+Two connected tunnels cannot have an identical `AllowedIPs` prefix. Nested prefixes are allowed, and the more specific route wins. The agent checks for conflicts at connect, login, route selection, and configuration refresh. A conflicting route selection is refused without changing the saved selection. When a configuration refresh introduces a conflict, the refreshed connection enters an error state and retries while the other tunnel keeps its routes.
+
+A local override replaces only `AllowedIPs`. Addresses, DNS, keys, and the endpoint still come from the controller. The override survives restarts, configuration refreshes, and switching to a server profile, and can be reselected with `--allowed-ips`.
+
+Non-default routes are added with `ip route add` at metric `51820`. When a directly connected LAN route covers a tunnel route, the agent leaves the LAN route intact, withdraws its conflicting tunnel route, and reports an error naming the prefix while keeping the rest of the tunnel active. Route and address changes trigger reconciliation, so leaving the LAN restores the tunnel route and joining it gives the LAN priority immediately.

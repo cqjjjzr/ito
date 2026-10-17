@@ -1,0 +1,34 @@
+= Configuration
+
+The controller reads a single TOML configuration file from `/etc/ito/config.toml` by default. You can override this path with the `ITO_CONFIG` environment variable or the `--config` command-line flag.
+
+Run `ito --check-config` to validate the configuration file. The validator rejects unknown keys and reports the line and column of syntax errors. Semantic errors identify the invalid setting or constraint.
+
+== Syntax and conventions
+
+Durations:: Write durations using human-readable units such as `90m`, `12h`, or `30days`.
+Secret files:: Paths to secret files must be absolute. The controller re-reads OIDC and SCIM secret files on each use, so rotating a secret does not require a restart. Interface `private_key_file` paths are read only at startup.
+Schema validation:: The documentation package includes `config.default.toml` (listing every key with its default value) and `config.schema.json` (a JSON Schema for the file) under `/usr/share/doc/ito/`. To enable validation and autocompletion in editors that support Taplo, add `#:schema /usr/share/doc/ito/config.schema.json` as the first line of `config.toml`.
+
+For details on configuring `[oidc]` and `[scim]`, see xref:identity.adoc[].
+
+== Example
+
+[source,toml]
+----
+include::example$config.sample.toml[]
+----
+
+include::partial$configuration-keys.adoc[]
+
+== Browser logout
+
+Signing out ends the Ito session first. If the OpenID Connect provider advertises
+an `end_session_endpoint`, the browser then visits it to complete provider logout.
+With Keycloak, this displays its logout confirmation page; leaving that page
+without confirming keeps the SSO session, while Ito remains signed out.
+
+Register the portal's `public_url` followed by `/` as an allowed post-logout
+redirect URI in the provider's client settings (for example,
+`http://localhost:8000/` for the demo). When provider logout is unsupported or
+provider discovery fails, Ito returns to its home page after local logout.

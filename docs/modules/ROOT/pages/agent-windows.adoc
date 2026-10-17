@@ -1,0 +1,96 @@
+= Windows agent
+
+`ito-agent` and `ito-tray` connect a Windows host to Ito portals using WireGuard for Windows. Each connection creates a standard WireGuard for Windows tunnel service (`WireGuardTunnel$ito-<short-id>`), which appears in the official WireGuard application alongside any other tunnels.
+
+== Requirements
+
+* WireGuard for Windows installed in `%ProgramFiles%\WireGuard`.
+* Administrator privileges to install the `ItoAgent` Windows service.
+
+Both `ito-agent.exe` and `ito-tray.exe` are native Win32 binaries that do not require .NET, WebView2, or a separate Visual C++ redistributable.
+
+== Installation
+
+Replace `VERSION` in the installer filenames below with the release version (for example, `0.1.0`).
+
+=== Installer bundle (`ItoSetup-VERSION-x64.exe`)
+
+Run `ItoSetup-VERSION-x64.exe` as an administrator. If WireGuard is not already present, the installer downloads and installs the signed WireGuard MSI selected when the bundle was built. It then installs Ito into `%ProgramFiles%\Ito` (or a custom directory chosen under *Options*). It also:
+
+* Adds `%ProgramFiles%\Ito` to the system `PATH`.
+* Installs and starts the `ItoAgent` background service.
+* Registers the `ito-wg:` URL scheme handler for all users.
+* Configures `ito-tray.exe` to start automatically at user sign-in for all users.
+
+The setup owns these machine-wide registrations and removes them on uninstall.
+
+WireGuard is considered present if its `WireGuardManager` service is registered, an x64 MSI from its product family is installed, or `%ProgramFiles%\WireGuard\wireguard.exe` exists. Any of these satisfies the check in both `ItoSetup-VERSION-x64.exe` and `Ito-VERSION-x64.msi` without upgrading an existing WireGuard installation. At runtime, `ItoAgent` invokes `wireguard.exe` and `wg.exe` from `%ProgramFiles%\WireGuard`.
+
+For silent deployment, run:
+
+[source,bat]
+----
+ItoSetup-VERSION-x64.exe /install /quiet /norestart
+----
+
+Pass `InstallFolder=C:\Path\To\Ito` to override the installation directory. Exit code `3010` indicates that a reboot is required to complete installation.
+
+=== MSI package (`Ito-VERSION-x64.msi`)
+
+For managed environments where WireGuard for Windows is already deployed, install `Ito-VERSION-x64.msi` directly. You can customize the installation directory via the `INSTALLFOLDER` MSI property.
+
+Upgrading or repairing preserves saved connections in `INSTALLFOLDER\Data`. Uninstalling stops `ItoAgent` and `ito-tray` and removes the system `PATH` entry, startup registration, and `ito-wg:` protocol handler, while leaving saved connections in `INSTALLFOLDER\Data` untouched. To remove tunnel services and revoke credentials before uninstalling, log out of your connections in the system tray first.
+
+=== Manual service installation
+
+When deploying from standalone binaries:
+
+* `ito-agent install`: Registers and starts the `ItoAgent` Windows service running as `LocalSystem`.
+* `ito-agent uninstall`: Stops and removes the `ItoAgent` service.
+* `ito-tray`: Runs the tray. Only the installer registers sign-in startup and `ito-wg:` portal links.
+
+Both installation methods configure the service to restart after a crash or a reported failure, with a delay.
+
+Members of the `Administrators` and `Network Configuration Operators` groups are permitted to control the agent via the tray or CLI.
+
+== Using the system tray (`ito-tray`)
+
+To add a connection from the web portal:
+
+. Open the portal in your browser, open a device's menu, and select *Connect a computer* -> *Open in the Ito tray*.
+. `ito-tray` prompts for confirmation and displays a verification code (such as `3F9A-1C2E`) while opening the portal approval page in your browser.
+. Confirm that the code matches and approve the device.
+
+You can also click *Add connection* directly in the tray menu and enter a portal URL or paste a `login` command from the portal.
+
+Each saved connection has a submenu in the tray showing its status, addresses, latest handshake, and transfer counters. From the submenu you can:
+
+* Connect or disconnect the tunnel.
+* Switch between route profiles offered by the controller and a saved *Custom routes* override. Selecting a server profile keeps the override saved. Set the override with `ito-agent profile NAME --allowed-ips 10.20.0.0/16,fd20::/64`.
+* Turn *Use controller DNS* on or off, a saved per-connection preference that matches `ito-agent dns NAME on|off`.
+* Rotate the device's WireGuard key pair or preshared key.
+* Open the web portal or log out to remove the connection.
+
+== Using the CLI (`ito-agent`)
+
+`ito-agent.exe` supports the same subcommands as the Linux agent (`login`, `list`, `status`, `up`, `down`, `profile`, `dns`, `rotate-key`, `rotate-psk`, and `logout`) and executes them by communicating with the running `ItoAgent` service:
+
+[source,bat]
+----
+ito-agent login https://vpn.example.com --device ID --connect
+----
+
+As on Linux, two connected tunnels cannot have an identical route prefix, including tunnels activated in WireGuard's own UI. Nested prefixes are allowed, and the more specific route wins. A new connection that would conflict stays disconnected until the conflicting tunnel is logged out. Failed tunnel operations report an error and retry instead of disconnecting silently.
+
+== Service architecture and security
+
+* **Tunnel management**: For each active connection, `ItoAgent` encrypts the WireGuard configuration with DPAPI for `LocalSystem` and writes it to `%ProgramFiles%\WireGuard\Data\Configurations\NAME.conf.dpapi`. It then starts `WireGuardTunnel$NAME` via `wireguard.exe /installtunnelservice` and queries live handshake and traffic counters via `wg.exe show NAME dump`.
+* **State directory**: Saved connections live in `INSTALLFOLDER\Data\connections` and logs are written to `INSTALLFOLDER\Data\agent.log` with an ACL restricted to `LocalSystem` and `Administrators`. The data directory sits under the protected installation folder, so ordinary users cannot create it in advance. The service still refuses symbolic links, junctions, and directories owned by anyone other than `LocalSystem` or `Administrators`.
+* **Named pipe IPC**: The CLI and tray communicate with `ItoAgent` over `\\.\pipe\ProtectedPrefix\Administrators\ito-agent` using newline-delimited JSON messages. The protected prefix keeps ordinary users from occupying the name while the service is stopped, the pipe ACL allows only `LocalSystem` and `Administrators` to create pipe instances, and clients verify that the server pipe is owned by `LocalSystem` or `Administrators` before sending requests.
+* **Service status**: The service reports running once its data directory and pipe are ready, and stop-pending while it shuts down.
+
+== Debugging
+
+To run the agent in the foreground with logs printed to standard error, run `ito-agent console` as `LocalSystem` (for example, using `psexec -s` or a scheduled task, because WireGuard tunnel services require configurations encrypted with `LocalSystem` DPAPI).
+
+For local testing without WireGuard installed, `ito-agent console --fake DIR` keeps tunnels in memory and stores their configurations as unencrypted files in `DIR\store`.

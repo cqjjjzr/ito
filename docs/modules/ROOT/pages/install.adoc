@@ -1,0 +1,117 @@
+= Install
+
+Run one Ito controller process per host. The controller requires Linux with WireGuard support, the `ip` utility (`iproute2`), the `wg` utility (`wireguard-tools`), and the `CAP_NET_ADMIN` capability. If you configure the built-in DNS server on port 53, the process also requires `CAP_NET_BIND_SERVICE`.
+
+At startup, the controller acquires an exclusive lock on its SQLite database file and exits if another controller process holds the lock.
+
+== Debian package
+
+Install the `.deb` package with `apt`:
+
+[source,sh]
+----
+sudo apt install ./ito_0.1.0-1_amd64.deb
+----
+
+The package installs:
+
+* `/usr/bin/ito`
+* `/etc/ito/config.toml` (a sample configuration preserved across upgrades)
+* `ito.service` (installed disabled so you can configure `/etc/ito/config.toml` before starting it)
+
+The systemd unit runs with `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, uses `/var/lib/ito` as its private state directory, and sets a `0077` umask. Package upgrades restart the service if it is already running. Uninstalling the package preserves `/var/lib/ito` and `/etc/ito`.
+
+To build the Debian package from source on the target Debian release:
+
+[source,sh]
+----
+cargo install cargo-deb
+just deb-server
+----
+
+== Container
+
+Because the controller manages WireGuard interfaces in the host kernel, the container must run in the host network namespace (`--network host`) with `NET_ADMIN` and `NET_BIND_SERVICE` capabilities:
+
+[source,sh]
+----
+docker build -t ito .
+docker run -d --name ito \
+  --network host \
+  --cap-drop ALL \
+  --cap-add NET_ADMIN \
+  --cap-add NET_BIND_SERVICE \
+  -v /etc/ito:/etc/ito:ro \
+  -v /var/lib/ito:/var/lib/ito \
+  ito
+----
+
+== NixOS
+
+Build the controller with `nix build .#ito`. The repository flake also provides a NixOS module (`ito.nixosModules.default`):
+
+[source,nix]
+----
+{
+  inputs.ito.url = "github:OWNER/ito";
+  outputs = { nixpkgs, ito, ... }: {
+    nixosConfigurations.vpn = nixpkgs.lib.nixosSystem {
+      modules = [
+        ito.nixosModules.default
+        {
+          services.ito = {
+            enable = true;
+            settings = {
+              public_url = "https://vpn.example.com";
+              oidc = {
+                issuer = "https://id.example.com";
+                client_id = "ito";
+                secret_file = "/run/secrets/ito-oidc";
+              };
+              interfaces.wg0 = {
+                private_key_file = "/run/secrets/wg0.key";
+                listen_port = 51820;
+                endpoint = "vpn.example.com:51820";
+                addresses = [ "10.0.0.1/24" ];
+                pools = [ { prefix = "10.0.0.0/24"; } ];
+              };
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+----
+
+Because `services.ito.settings` renders to a world-readable `config.toml` in the Nix store, reference external secret files via `secret_file` and `private_key_file`. Alternatively, set `services.ito.configFile` to an external path to keep the entire configuration file out of the Nix store.
+
+== Building from source
+
+Building from source requires the Rust toolchain specified in `rust-toolchain.toml`, a C compiler (for bundled SQLite), and Node.js with `pnpm` (for the web portal):
+
+[source,sh]
+----
+just build check-config
+sudo target/release/ito --config /etc/ito/config.toml
+----
+
+`just build` compiles the Vue web portal into `web/dist` and embeds it into the `ito` binary. If you compile the Rust binary directly with `cargo build` without `web/dist` present, the controller serves only the HTTP API.
+
+== Serving a custom web frontend
+
+By default, the controller serves the embedded web portal alongside `/api/` and `/health/`. To serve a custom frontend build from a reverse proxy, forward `/api/*` to the controller and serve static files for all other paths. For example, with Caddy:
+
+[source]
+----
+vpn.example.com {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle {
+		root * /srv/ito-web
+		try_files {path} /index.html
+		file_server
+	}
+}
+----

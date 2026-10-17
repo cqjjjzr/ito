@@ -1,0 +1,45 @@
+= Ito
+
+Ito is a self-service WireGuard control plane for a single Linux host. Users sign in through an OpenID Connect (OIDC) provider, register their devices, and receive tunnel addresses from the IPv4 and IPv6 pools defined in the server configuration. The controller configures the host's WireGuard interfaces using `ip` and `wg` and reconciles the kernel state whenever devices or accounts change.
+
+== Overview
+
+* Creates and manages WireGuard network interfaces, including server private keys, listen ports, MTU, interface addresses, and peers.
+* Allocates IPv4 and IPv6 addresses and routed prefixes to devices from per-interface pools while enforcing per-account quotas.
+* Enforces an expiration time on every device public key. Users can rotate or renew keys in the web portal, or run the host agent to renew them automatically.
+* Allows signed-in users to authorize the Linux or Windows host agent with a per-device credential.
+* Revokes access immediately when an administrator blocks an account, or automatically via SCIM 2.0 when a user is disabled or deleted at the identity provider.
+* Optionally runs an authoritative DNS server that answers A and AAAA queries for device DNS names within each interface's zone.
+
+Ito manages only the WireGuard interfaces it owns. Host firewall rules, NAT, packet forwarding, and external routing remain the responsibility of the host's network configuration.
+
+== Components
+
+The controller runs as a single process:
+
+HTTP server:: Serves the web portal, the browser API under `/api/v1`, and the device agent API under `/api/v1/agent`.
+SQLite database:: Stores accounts, sessions, devices, agent credentials, and audit records.
+Reconciler:: Compares the database state against the Linux kernel and runs `ip` and `wg` commands to apply changes.
+SCIM status task:: Optionally polls the identity provider over SCIM 2.0 to disable or delete accounts that are no longer active.
+DNS server:: Optionally serves authoritative DNS zones for configured interfaces based on device records.
+
+The host agent (`ito-agent`) is a separate program for Linux and Windows clients that polls the agent API and configures local WireGuard tunnels.
+
+== Quick start
+
+On a Debian host with WireGuard support (`iproute2` and `wireguard-tools`):
+
+. Register an OIDC client as described in xref:identity.adoc[] and save the client secret to `/etc/ito/oidc.secret`.
+. Install the package, generate a server private key, edit `/etc/ito/config.toml`, and start the service:
+
+[source,sh]
+----
+sudo apt install ./ito_0.1.0-1_amd64.deb
+sudo install -d -m 700 /etc/ito/keys
+(umask 077; wg genkey | sudo tee /etc/ito/keys/wg0.key >/dev/null)
+sudoedit /etc/ito/config.toml
+sudo ito --check-config
+sudo systemctl enable --now ito
+----
+
+Once the service is running, open `https://YOUR-HOST/` in a browser to sign in.

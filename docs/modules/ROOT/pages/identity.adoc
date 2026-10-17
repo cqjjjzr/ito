@@ -1,0 +1,69 @@
+= Identity provider
+
+Users sign in to Ito through an OpenID Connect (OIDC) provider. Ito identifies each account by the `sub` claim in the provider's ID token, so the provider must assign stable `sub` values.
+
+== OIDC client setup
+
+Register a confidential OIDC client with the following settings:
+
+* **Grant type**: Authorization Code flow with PKCE (`S256`).
+* **Redirect URI**: `PUBLIC_URL/api/v1/auth/callback` (using the exact `public_url` from `config.toml`).
+* **Scopes**: Include `profile` so that ID tokens carry the user's display `name`.
+* **Group claim**: Include a `groups` claim in the ID token containing an array of group name strings. Configure `oidc.admin_groups` with the group names that grant administrator privileges.
+
+Save the client secret to the file configured in `oidc.secret_file` and restrict its permissions to the controller user.
+
+=== Sign-in flow and session handling
+
+During sign-in, the controller stores the PKCE verifier, OAuth state, and OIDC nonce in a ten-minute HTTP-only cookie. When `cookie_secure` is enabled (the default), both the login cookie and the session cookie use the `__Host-` prefix.
+
+The controller validates the ID token's signature, issuer, audience, authorized party (`azp`), expiration time, and nonce against the algorithms and keys advertised by the provider. It refreshes the provider's OIDC discovery document and JSON Web Key Set (JWKS) every ten minutes.
+
+Administrator privileges are evaluated from the `groups` claim at sign-in and stored on the session. Each login writes a `session.created` audit entry for the account, and the log line records its groups and whether administrator access was granted. If you remove a user from an administrator group, the change takes effect on their next sign-in, or immediately if you block the account to terminate active sessions.
+
+== Revoking disabled or deleted users
+
+Without SCIM polling, the controller only checks the identity provider when a user signs in. Disabling or deleting a user at the provider blocks new logins, but existing browser sessions remain valid until `session_lifetime` or `session_idle` expires, and existing WireGuard keys remain active until `key_lifetime` expires.
+
+To revoke access immediately without SCIM, block the account in the web portal or call `PUT /api/v1/accounts/\{id}/policy` with `{"blocked": true}`.
+
+[#status]
+== Optional SCIM 2.0 user status polling
+
+The controller can query a SCIM 2.0 service to detect disabled or deleted users automatically. SCIM polling requires:
+
+* SCIM `User` resource IDs that match the OIDC ID token `sub` claim.
+* A confidential OAuth client authorized to obtain SCIM access tokens via the OAuth 2.0 Client Credentials grant.
+
+To enable polling, add a `[scim]` section to `config.toml` with `url`, `client_id`, and `secret_file`.
+
+The controller queries `GET \{scim.url}/Users/\{sub}?attributes=id,active`:
+
+* Periodically for all accounts every `scim.interval`.
+* Immediately when an administrator calls `POST /api/v1/accounts/refresh`.
+* During every OIDC sign-in before creating a session.
+
+Each check classifies the user as `active`, `disabled` (`active: false`), or `missing` (HTTP 404). When an account becomes `disabled` or `missing`, the controller deletes all of its sessions and agent credentials and expires its device keys immediately. The devices keep their keys: if the user is re-enabled later, they can sign in again and renew the keys, but they must log their host agents in again.
+
+If a SCIM request fails due to a network or server error, the controller preserves the account's current state, sets `idp_check_error`, logs the error, and increments the `ito_account_idp_check_errors` metric. Because sign-in requires a live status check when `[scim]` is configured, new logins fail with `identity_unavailable` while the SCIM endpoint is unreachable.
+
+=== Keycloak setup
+
+Keycloak 26.8 and later provide a realm SCIM 2.0 endpoint at `+{REALM_URL}/scim/v2+`:
+
+. Enable the SCIM API in the realm settings (`scimApiEnabled`).
+. Create a confidential client with service accounts enabled and only the Client Credentials grant enabled.
+. Assign the `view-users` role from the `realm-management` client to the service account.
+. Add an Audience protocol mapper to the client that includes the SCIM base URL (for example, `https://id.example.com/realms/ito/scim/v2`) in the access token `aud` claim.
+. Set `scim.url` to the SCIM base URL and save the client secret to `scim.secret_file`.
+
+[#federation]
+=== Federated user directories (LDAP)
+
+When Keycloak federates users from LDAP or another external directory, an outage of the upstream directory can cause Keycloak to report federated users as disabled or missing. To prevent mass revocation during a directory outage, configure a canary user in `scim.health_subject`:
+
+. Create a dedicated canary user account in the upstream directory with no privileges and keep it enabled.
+. Import the user into Keycloak and set `scim.health_subject` to its user ID (`sub`).
+. Set the user federation cache policy in Keycloak to `NO_CACHE` so Keycloak queries the upstream directory instead of serving cached status during an outage.
+
+Whenever a SCIM check reports a user as `disabled` or `missing`, the controller first checks `scim.health_subject`. If the canary user is unreachable or not active, the controller treats the result as a transient SCIM error rather than revoking the account.
