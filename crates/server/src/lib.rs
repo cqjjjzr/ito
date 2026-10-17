@@ -1,9 +1,11 @@
+pub mod accounts;
 pub mod addressing;
 pub mod approvals;
 pub mod config;
 pub mod db;
 pub mod devices;
 pub mod error;
+pub mod identity;
 pub mod kernel;
 pub mod logging;
 pub mod reconcile;
@@ -19,6 +21,8 @@ pub struct App {
     pub config: config::Config,
     pub db: Db,
     pub kernel: Arc<dyn kernel::KernelDriver>,
+    pub http_client: reqwest::Client,
+    pub identity_cache: identity::IdentityCache,
     pub server_keys: wireguard_keys::ServerKeyByInterface,
     /// Latest reconciliation status for each configured interface, keyed by interface name.
     pub interface_status: Mutex<BTreeMap<String, InterfaceStatus>>,
@@ -49,6 +53,8 @@ impl App {
             config,
             db,
             kernel,
+            http_client: identity::oidc::build_http_client(),
+            identity_cache: identity::IdentityCache::default(),
             interface_status: Mutex::default(),
             sweep_notify: tokio::sync::Notify::default(),
             approvals: approvals::AgentApprovals::default(),
